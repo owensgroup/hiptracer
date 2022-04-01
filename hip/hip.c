@@ -1,6 +1,33 @@
 #include <dlfcn.h>
 
 #include <stddef.h>
+#include <stdio.h>
+#include <stdint.h>
+
+const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
+
+#define CLANG_OFFLOAD_BUNDLER_MAGIC "__CLANG_OFFLOAD_BUNDLE__"
+#define AMDGCN_AMDHSA_TRIPLE "hip-amdgcn-amd-amdhsa"
+
+typedef struct __ClangOffloadBundleDesc {
+  uint64_t offset;
+  uint64_t size;
+  uint64_t tripleSize;
+  const char triple[1];
+} __ClangOffloadBundleDesc;
+
+typedef struct __ClangOffloadBundleHeader {
+  const char magic[sizeof(CLANG_OFFLOAD_BUNDLER_MAGIC) - 1];
+  uint64_t numBundles;
+  __ClangOffloadBundleDesc desc[1];
+} __ClangOffloadBundleHeader;
+
+typedef struct __CudaFatBinaryWrapper {
+  unsigned int                magic;
+  unsigned int                version;
+  __ClangOffloadBundleHeader* binary;
+  void*                       unused;
+} __CudaFatBinaryWrapper;
 
 typedef struct my_hipDeviceProp_t {
     char name[256];            ///< Device name.
@@ -88,11 +115,12 @@ serialize_hipDeviceProp_t(my_hipDeviceProp_t* p_prop);
 serialize_int(int i);
 
 my_hipError_t (*hipGetDeviceProperties_fptr)(my_hipDeviceProp_t*,int) = NULL;
+void* (*hipRegisterFatBinary_fptr)(const void*) = NULL;
 
 my_hipError_t hipGetDeviceProperties(my_hipDeviceProp_t* p_prop, int device)
 {
-    if (rocmLibHandle == NULL) {
-        rocmLibHandle = dlopen("/opt/rocm/librocm64.so", RTLD_LAZY | RTLD_LOCAL);
+    if (rocmLibHandle == NULL) { 
+        rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
     }
     if (hipGetDeviceProperties_fptr == NULL) {
         hipGetDeviceProperties_fptr = (my_hipError_t (*) (my_hipDeviceProp_t*, int)) dlsym(rocmLibHandle, "hipGetDeviceProperties");
@@ -101,7 +129,7 @@ my_hipError_t hipGetDeviceProperties(my_hipDeviceProp_t* p_prop, int device)
     return result;
 }
 
-
+/*
 my_hipError_t hipFree();
 
 my_hipError_t hipMalloc();
@@ -109,4 +137,47 @@ my_hipError_t hipMalloc();
 my_hipError_t hipMemcpy();
 
 my_hipError_t hipLaunchKernelGGL();
+
+*/
+
+void* __hipRegisterFatBinary(const void* data)
+{
+    if (rocmLibHandle == NULL) {
+        rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
+    }
+    if (hipRegisterFatBinary_fptr == NULL) {
+        hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(rocmLibHandle, "__hipRegisterFatBinary");
+    }
+
+    printf("__hipRegisterFatBinary(%p)\n", data);
+
+    printf("Printing %p\n", data);
+    printf("__CudaFatBinaryWrapper struct\n");
+    __CudaFatBinaryWrapper* fbwrapper = (__CudaFatBinaryWrapper*) data;
+
+    printf("\t magic: %d\n", fbwrapper->magic);
+    printf("\t version: %d\n", fbwrapper->version);
+    printf("\t binary: %p\n", fbwrapper->binary);
+    printf("\t unused: %p\n", fbwrapper->unused);
+
+    printf("Printing %p\n", fbwrapper->binary);
+    printf("__ClangOffloadBundleHeader struct\n");
+    __ClangOffloadBundleHeader* header = (__ClangOffloadBundleHeader*) fbwrapper->binary;
+    printf("\t magic: %s\n", header->magic);
+    printf("\t numBundles: %lu\n", header->numBundles);
+
+    __ClangOffloadBundleDesc* desc = (__ClangOffloadBundleDesc*) &(header->desc[0]);
+    for( int i = 0; i < header->numBundles; i++) {
+        printf("\t desc: ...\n");
+        printf("\t\t offset: %lu\n", desc->offset);
+        printf("\t\t size: %lu\n", desc->size);
+        printf("\t\t tripleSize: %lu\n", desc->tripleSize);
+        printf("\t\t triple: %s\n", desc->triple);
+
+	desc = (__ClangOffloadBundleDesc*) (desc->triple + desc->tripleSize);
+    }
+
+
+    return (*hipRegisterFatBinary_fptr)(data);
+}
 
