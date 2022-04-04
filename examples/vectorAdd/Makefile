@@ -12,22 +12,26 @@ OBJECTS = $(SOURCES:.cpp=.o)
 
 EXECUTABLE=./vectoradd_hip.exe
 
+TRACER=../../hip/libhiptracer.so
+
 .PHONY: test
 
 
-all: $(EXECUTABLE) test
+all: $(EXECUTABLE) $(TRACER) test
 
-CXXFLAGS =-g
+CXXFLAGS =
 
 CXX=$(HIPCC)
 
 
 $(EXECUTABLE): $(OBJECTS) 
-	$(HIPCC) $(OBJECTS) -o $@
+	$(HIPCC) -O3 $(OBJECTS) -o $@
 
+$(TRACER):
+	make -C ../../hip/
 
-test: $(EXECUTABLE)
-	$(EXECUTABLE)
+test: $(EXECUTABLE) $(TRACER)
+	LD_PRELOAD=$(TRACER) $(EXECUTABLE)
 
 
 clean:

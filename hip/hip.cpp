@@ -4,10 +4,18 @@
 #include <stdio.h>
 #include <stdint.h>
 
+
+extern "C" {
 const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
 
 #define CLANG_OFFLOAD_BUNDLER_MAGIC "__CLANG_OFFLOAD_BUNDLE__"
 #define AMDGCN_AMDHSA_TRIPLE "hip-amdgcn-amd-amdhsa"
+
+typedef struct dim3 {
+    uint32_t x;  ///< x
+    uint32_t y;  ///< y
+    uint32_t z;  ///< z
+} dim3;
 
 typedef struct __ClangOffloadBundleDesc {
   uint64_t offset;
@@ -28,6 +36,15 @@ typedef struct __CudaFatBinaryWrapper {
   __ClangOffloadBundleHeader* binary;
   void*                       unused;
 } __CudaFatBinaryWrapper;
+
+
+void write_fatbin( FILE* fp, __CudaFatBinaryWrapper* fbwrapper)
+{
+    fprintf( "%d", fbwrapper->magic);
+    fprintf( "%d", fbwrapper->version);
+    fprintf( "%p", fbwrapper->binary);
+    fprintf( "%s\n", fbwrapper->unused);
+}
 
 typedef struct my_hipDeviceProp_t {
     char name[256];            ///< Device name.
@@ -111,11 +128,13 @@ typedef enum my_hipError_t {
 
 void* rocmLibHandle = NULL;
 
-serialize_hipDeviceProp_t(my_hipDeviceProp_t* p_prop);
-serialize_int(int i);
+//serialize_hipDeviceProp_t(my_hipDeviceProp_t* p_prop);
+//serialize_int(int i);
 
 my_hipError_t (*hipGetDeviceProperties_fptr)(my_hipDeviceProp_t*,int) = NULL;
 void* (*hipRegisterFatBinary_fptr)(const void*) = NULL;
+my_hipError_t (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, int) = NULL;
+
 
 my_hipError_t hipGetDeviceProperties(my_hipDeviceProp_t* p_prop, int device)
 {
@@ -136,9 +155,27 @@ my_hipError_t hipMalloc();
 
 my_hipError_t hipMemcpy();
 
-my_hipError_t hipLaunchKernelGGL();
-
 */
+my_hipError_t hipLaunchKernel(const void* function_address,
+			      dim3 numBlocks,
+			      dim3 dimBlocks,
+			      void** args,
+			      size_t sharedMemBytes,
+			      int stream)
+{
+    if (rocmLibHandle == NULL) {
+        rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
+    }
+    if (hipLaunchKernel_fptr == NULL) {
+        hipLaunchKernel_fptr = ( my_hipError_t (*) (const void*, dim3, dim3, void**, size_t, int)) dlsym(rocmLibHandle, "hipLaunchKernel");
+    }
+
+    printf("hipLaunchKernel\n");
+    printf("function address: %p\n", function_address);
+
+    return (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
+}
+
 
 void* __hipRegisterFatBinary(const void* data)
 {
@@ -181,3 +218,4 @@ void* __hipRegisterFatBinary(const void* data)
     return (*hipRegisterFatBinary_fptr)(data);
 }
 
+};
