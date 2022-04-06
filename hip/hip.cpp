@@ -1,9 +1,39 @@
-#include <dlfcn.h>
+#include <cstdio>
+#include <vector>
+#include <iostream>
 
+#include <dlfcn.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
 
+// event_t, header_t
+#include "trace.h"
+
+void write_header(std::FILE* fp, header_t* header)
+{
+    header_t hdr;
+    hdr.magic = 0xDEADBEEF;
+    if (header) {
+        hdr.num_events = header->num_events;
+    }
+    std::fwrite(&hdr, sizeof(header_t), 1, fp);
+}
+
+void write_event_list(std::FILE* fp, std::vector<event_t> &events)
+{
+    std::fwrite(events.data(), sizeof(events[0]), events.size(), fp);
+}
+
+void write_event(std::FILE* fp, event_t* event)
+{
+    event_t e;
+    if (event) {
+        e.name = event->name;
+    }
+
+    std::fwrite(&e, sizeof(event_t), 1, fp);
+}
 
 extern "C" {
 const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
@@ -21,13 +51,13 @@ typedef struct __ClangOffloadBundleDesc {
   uint64_t offset;
   uint64_t size;
   uint64_t tripleSize;
-  const char triple[1];
+  const char* triple;
 } __ClangOffloadBundleDesc;
 
 typedef struct __ClangOffloadBundleHeader {
   const char magic[sizeof(CLANG_OFFLOAD_BUNDLER_MAGIC) - 1];
   uint64_t numBundles;
-  __ClangOffloadBundleDesc desc[1];
+  __ClangOffloadBundleDesc* desc;
 } __ClangOffloadBundleHeader;
 
 typedef struct __CudaFatBinaryWrapper {
@@ -38,6 +68,7 @@ typedef struct __CudaFatBinaryWrapper {
 } __CudaFatBinaryWrapper;
 
 
+/*
 void write_fatbin( FILE* fp, __CudaFatBinaryWrapper* fbwrapper)
 {
     fprintf( "%d", fbwrapper->magic);
@@ -45,6 +76,8 @@ void write_fatbin( FILE* fp, __CudaFatBinaryWrapper* fbwrapper)
     fprintf( "%p", fbwrapper->binary);
     fprintf( "%s\n", fbwrapper->unused);
 }
+*/
+
 
 typedef struct my_hipDeviceProp_t {
     char name[256];            ///< Device name.
@@ -211,7 +244,11 @@ void* __hipRegisterFatBinary(const void* data)
         printf("\t\t tripleSize: %lu\n", desc->tripleSize);
         printf("\t\t triple: %s\n", desc->triple);
 
-	desc = (__ClangOffloadBundleDesc*) (desc->triple + desc->tripleSize);
+        //uint8_t* image = (uint8_t*) (header + desc->offset);
+        std::string image { (const char*) ( header + desc->offset), desc->size };
+        std::cout << image << std::endl;
+
+	    desc = (__ClangOffloadBundleDesc*) (desc->triple + desc->tripleSize);
     }
 
 
@@ -219,3 +256,14 @@ void* __hipRegisterFatBinary(const void* data)
 }
 
 };
+
+int main() {
+    std::cout << "Running as executable" << std::endl;
+    std::cout << "Create dummy trace" << std::endl;
+
+    std::FILE* fp = std::fopen("dummy.tr", "wb");
+
+    write_header(fp, nullptr);
+
+    return 0;
+}
