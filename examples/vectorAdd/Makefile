@@ -27,7 +27,7 @@ CXX=$(HIPCC)
 $(EXECUTABLE): $(OBJECTS) 
 	$(HIPCC) -O3 $(OBJECTS) -o $@
 
-$(TRACER):
+$(TRACER): ../../hip/hip.cpp
 	make -C ../../hip/
 
 test: $(EXECUTABLE) $(TRACER)

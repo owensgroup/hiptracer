@@ -2,11 +2,11 @@ OBJS	= hiptracer.pic.o
 SOURCE	= hip.cpp
 OUT	= libhiptracer.so
 CC	 = clang++
-FLAGS	 = -c -Wall -fPIC -pedantic -std=c++11
+FLAGS	 = -c -Wall -fPIC -pedantic -std=c++17
 LFLAGS	 = -ldl
 INC = ../include/
 
-all: hiptracer.pic.o hip.exe
+all: hiptracer.pic.o
 	$(CC) -shared $(OBJS) -o $(OUT) $(LFLAGS)
 	$(CC) $(OBJS) -o hip.exe $(LFLAGS)
 

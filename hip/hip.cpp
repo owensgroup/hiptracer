@@ -1,6 +1,9 @@
 #include <cstdio>
+#include <cstddef>
 #include <vector>
 #include <iostream>
+#include <cstring>
+#include <string>
 
 #include <dlfcn.h>
 #include <stddef.h>
@@ -50,14 +53,15 @@ typedef struct dim3 {
 typedef struct __ClangOffloadBundleDesc {
   uint64_t offset;
   uint64_t size;
+
   uint64_t tripleSize;
-  const char* triple;
+  uint8_t triple[1];
 } __ClangOffloadBundleDesc;
 
 typedef struct __ClangOffloadBundleHeader {
   const char magic[sizeof(CLANG_OFFLOAD_BUNDLER_MAGIC) - 1];
   uint64_t numBundles;
-  __ClangOffloadBundleDesc* desc;
+  __ClangOffloadBundleDesc desc[1];
 } __ClangOffloadBundleHeader;
 
 typedef struct __CudaFatBinaryWrapper {
@@ -236,19 +240,46 @@ void* __hipRegisterFatBinary(const void* data)
     printf("\t magic: %s\n", header->magic);
     printf("\t numBundles: %lu\n", header->numBundles);
 
-    __ClangOffloadBundleDesc* desc = (__ClangOffloadBundleDesc*) &(header->desc[0]);
-    for( int i = 0; i < header->numBundles; i++) {
+    std::byte* next = reinterpret_cast<std::byte*>(&(header->desc[0]));
+ 
+    for( int i = 0; i < header->numBundles; i++) {	
+	
+	struct desc_t {
+	  uint64_t size;
+	  uint64_t offset;
+	  uint64_t tripleSize;
+	};
+	
+	desc_t desc;
+	std::memcpy(&desc, next, sizeof(desc));
+
+        printf("\t\t tripleSize: %lu\n", desc.tripleSize);
+
+	// Determine chunk size 
+	size_t chunk_size = sizeof(desc) + desc.tripleSize;
+	std::vector<std::byte> bytes(chunk_size);	
+
+	// Copy chunk from file to bytes
+	std::memcpy(bytes.data(), next, chunk_size);
+
+	std::string triple;
+	triple.reserve(desc.tripleSize);
+	std::memcpy(triple.data(), bytes.data() + sizeof(desc), desc.tripleSize);
+
         printf("\t desc: ...\n");
-        printf("\t\t offset: %lu\n", desc->offset);
-        printf("\t\t size: %lu\n", desc->size);
-        printf("\t\t tripleSize: %lu\n", desc->tripleSize);
-        printf("\t\t triple: %s\n", desc->triple);
+        printf("\t\t offset: %lu\n", desc.offset);
+        printf("\t\t size: %lu\n", desc.size);
+        printf("\t\t tripleSize: %lu\n", desc.tripleSize);
+	printf("\t\t triple: %.*s\n", desc.tripleSize, triple.c_str());
 
         //uint8_t* image = (uint8_t*) (header + desc->offset);
-        std::string image { (const char*) ( header + desc->offset), desc->size };
-        std::cout << image << std::endl;
+        //std::string image { (const char*) ( header + desc->offset), desc->size };
+        //std::cout << image << std::endl;
 
-	    desc = (__ClangOffloadBundleDesc*) (desc->triple + desc->tripleSize);
+	//desc = (__ClangOffloadBundleDesc*) (desc->triple + desc->tripleSize);
+	//
+
+	next += chunk_size;
     }
 
 
