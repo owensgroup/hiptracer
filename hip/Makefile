@@ -2,7 +2,7 @@ OBJS	= hiptracer.pic.o
 SOURCE	= hip.cpp
 OUT	= libhiptracer.so
 CC	 = clang++
-FLAGS	 = -c -Wall -fPIC -pedantic -std=c++17
+FLAGS	 = -c -Wall -fPIC -pedantic -std=c++17 -g
 LFLAGS	 = -ldl
 INC = ../include/
 

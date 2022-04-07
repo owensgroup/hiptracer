@@ -13,6 +13,11 @@
 // event_t, header_t
 #include "trace.h"
 
+const char* g_prog_name = "./vectoradd"; //FIXME
+int g_curr_event = 0;
+
+typedef void* my_hipStream_t;
+
 void write_header(std::FILE* fp, header_t* header)
 {
     header_t hdr;
@@ -51,27 +56,27 @@ extern "C" {
     } dim3;
 
     /*
-    typedef struct __ClangOffloadBundleDesc {
-        uint64_t offset;
-        uint64_t size;
+       typedef struct __ClangOffloadBundleDesc {
+       uint64_t offset;
+       uint64_t size;
 
-        uint64_t tripleSize;
-        uint8_t triple[1];
-    } __ClangOffloadBundleDesc;
+       uint64_t tripleSize;
+       uint8_t triple[1];
+       } __ClangOffloadBundleDesc;
 
-    typedef struct __ClangOffloadBundleHeader {
-        const char magic[sizeof(CLANG_OFFLOAD_BUNDLER_MAGIC) - 1];
-        uint64_t numBundles;
-        __ClangOffloadBundleDesc desc[1];
-    } __ClangOffloadBundleHeader;
+       typedef struct __ClangOffloadBundleHeader {
+       const char magic[sizeof(CLANG_OFFLOAD_BUNDLER_MAGIC) - 1];
+       uint64_t numBundles;
+       __ClangOffloadBundleDesc desc[1];
+       } __ClangOffloadBundleHeader;
 
-    typedef struct __CudaFatBinaryWrapper {
-        unsigned int                magic;
-        unsigned int                version;
-        __ClangOffloadBundleHeader* binary;
-        void*                       unused;
-    } __CudaFatBinaryWrapper;
-    */
+       typedef struct __CudaFatBinaryWrapper {
+       unsigned int                magic;
+       unsigned int                version;
+       __ClangOffloadBundleHeader* binary;
+       void*                       unused;
+       } __CudaFatBinaryWrapper;
+     */
 
     typedef struct my_hipDeviceProp_t {
         char name[256];            ///< Device name.
@@ -153,25 +158,42 @@ extern "C" {
         hipErrorProfilerDisabled = 5
     } my_hipError_t;
 
-    void* rocmLibHandle = NULL;
+    typedef enum my_hipMemcpyKind {
+        hipMemcpyHostToHost = 0,
+        hipMemcpyHostToDevice = 1,
+        hipMemcpyDeviceToHost = 2,
+        hipMemcpyDeviceToDevice = 3,
+        hipMemcpyDefault = 4
+    } my_hipMemcpyKind;
 
-    //serialize_hipDeviceProp_t(my_hipDeviceProp_t* p_prop);
-    //serialize_int(int i);
+    void* rocmLibHandle = NULL;
 
     my_hipError_t (*hipGetDeviceProperties_fptr)(my_hipDeviceProp_t*,int) = NULL;
     void* (*hipRegisterFatBinary_fptr)(const void*) = NULL;
-    my_hipError_t (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, int) = NULL;
-
+    my_hipError_t (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, my_hipStream_t) = NULL;
+    my_hipError_t (*hipFree_fptr)(void*) = NULL;
+    my_hipError_t (*hipMalloc_fptr)(void**, size_t) = NULL;
+    my_hipError_t (*hipMemcpy_fptr)(void*, const void*, size_t, my_hipMemcpyKind) = NULL;
 
     my_hipError_t hipGetDeviceProperties(my_hipDeviceProp_t* p_prop, int device)
     {
+        g_curr_event++;
+
         if (rocmLibHandle == NULL) { 
             rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
         }
         if (hipGetDeviceProperties_fptr == NULL) {
             hipGetDeviceProperties_fptr = (my_hipError_t (*) (my_hipDeviceProp_t*, int)) dlsym(rocmLibHandle, "hipGetDeviceProperties");
         }
+
+        printf("[%d] hooked: hipGetDeviceProperties\n", g_curr_event);
+        printf("[%d] \t p_prop: %p\n", g_curr_event, p_prop);
+        printf("[%d]\t device: %d\n", g_curr_event, device);
+        printf("[%d] calling: hipGetDeviceProperties\n", g_curr_event); 
+
         my_hipError_t result = (*hipGetDeviceProperties_fptr)(p_prop, device);
+
+        printf("[%d] \t result: %d\n", g_curr_event, result);
         return result;
     }
 
@@ -180,19 +202,31 @@ extern "C" {
             dim3 dimBlocks,
             void** args,
             size_t sharedMemBytes,
-            int stream)
+            my_hipStream_t stream)
     {
+        g_curr_event++;
+
         if (rocmLibHandle == NULL) {
             rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
         }
         if (hipLaunchKernel_fptr == NULL) {
-            hipLaunchKernel_fptr = ( my_hipError_t (*) (const void*, dim3, dim3, void**, size_t, int)) dlsym(rocmLibHandle, "hipLaunchKernel");
+            hipLaunchKernel_fptr = ( my_hipError_t (*) (const void*, dim3, dim3, void**, size_t, my_hipStream_t)) dlsym(rocmLibHandle, "hipLaunchKernel");
         }
 
-        printf("hipLaunchKernel\n");
-        printf("function address: %p\n", function_address);
+        printf("[%d] hooked: hipLaunchKernel\n", g_curr_event);
+        printf("[%d] \t function_address: %p\n", g_curr_event,  function_address);
+        printf("[%d] \t numBlocks: %d %d %d\n", g_curr_event, numBlocks.x, numBlocks.y, numBlocks.z);
+        printf("[%d] \t dimBlocks: %d %d %d\n", g_curr_event, dimBlocks.x, dimBlocks.y, dimBlocks.z);
+        printf("[%d] \t args: %p\n", g_curr_event, args);
+        printf("[%d] \t sharedMemBytes: %lu\n", g_curr_event, sharedMemBytes);
+        printf("[%d] \t stream: %p\n", g_curr_event, stream); 
+        printf("[%d] calling: hipLaunchKernel\n", g_curr_event);
 
-        return (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
+        my_hipError_t result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
+
+        printf("[%d] \t result: %d\n", g_curr_event, result);
+
+        return result;
     }
 
 
@@ -204,15 +238,12 @@ extern "C" {
         if (hipRegisterFatBinary_fptr == NULL) {
             hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(rocmLibHandle, "__hipRegisterFatBinary");
         }
+        printf("[%d] hooked: __hipRegisterFatBinary(%p)\n", g_curr_event, data);
 
-        
-        std::FILE* fp = std::fopen("dummy.tr", "wb");
-        write_header(fp, nullptr);
-
-        printf("__hipRegisterFatBinary(%p)\n", data);
-
+        /*
         printf("Printing %p\n", data);
         printf("__CudaFatBinaryWrapper struct\n");
+        */
 
         const std::byte* wrapper_bytes = reinterpret_cast<const std::byte*>(data);
         struct fb_wrapper_t {
@@ -224,30 +255,19 @@ extern "C" {
         fb_wrapper_t fbwrapper;
         std::memcpy(&fbwrapper, wrapper_bytes, sizeof(fb_wrapper_t));
 
-        printf("\t magic: %lx\n", fbwrapper.magic);
-        printf("\t version: %lu\n", fbwrapper.version);
-        printf("\t binary: %p\n", fbwrapper.binary);
-        printf("\t unused: %p\n", fbwrapper.unused);
-
-        printf("Printing %p\n", fbwrapper.binary);
-
         const std::byte* bin_bytes = reinterpret_cast<const std::byte*>(fbwrapper.binary);
         typedef struct {
             const char magic[sizeof(CLANG_OFFLOAD_BUNDLER_MAGIC) - 1] = 
-                {'_', '_', 
-                 'C', 'L', 'A', 'N', 'G', '_', 
-                 'O', 'F', 'F', 'L', 'O', 'A', 'D', '_',
-                 'B', 'U', 'N', 'D', 'L', 'E',
-                 '_', '_'};
+            {'_', '_', 
+                'C', 'L', 'A', 'N', 'G', '_', 
+                'O', 'F', 'F', 'L', 'O', 'A', 'D', '_',
+                'B', 'U', 'N', 'D', 'L', 'E',
+                '_', '_'};
             uint64_t numBundles; 
         } fb_header_t;
 
         fb_header_t fbheader;
         std::memcpy(&fbheader, bin_bytes, sizeof(fb_header_t));
-
-        printf("__ClangOffloadBundleHeader struct\n");
-        printf("\t magic: %.*s\n", sizeof(fbheader.magic), fbheader.magic);
-        printf("\t numBundles: %lu\n", fbheader.numBundles);
 
         const std::byte* next = bin_bytes + sizeof(fb_header_t);
 
@@ -267,25 +287,18 @@ extern "C" {
 
             std::memcpy(bytes.data(), next, chunk_size);
 
-            std::fwrite(bytes.data(), sizeof(std::byte), bytes.size(), fp);
+            //std::fwrite(bytes.data(), sizeof(std::byte), bytes.size(), fp);
 
             std::string triple;
             triple.reserve(desc.tripleSize + 1);
             std::memcpy(triple.data(), bytes.data() + sizeof(desc), desc.tripleSize);
-	    triple[desc.tripleSize] = '\0';
+            triple[desc.tripleSize] = '\0';
 
-            printf("\t desc: ...\n");
-            printf("\t\t offset: %lu\n", desc.offset);
-            printf("\t\t size: %lu\n", desc.size);
-            printf("\t\t tripleSize: %lu\n", desc.tripleSize);
-            printf("\t\t triple: %s\n", triple.c_str());
-
-	    if (desc.size > 0) {
-            	printf("\t\t writing code object:\n");
-            	std::FILE* code = std::fopen(triple.c_str(), "wb");
-            	std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
-	    }
-
+            if (desc.size > 0) {
+                printf("[%d] writing code object for %s:\n", g_curr_event, triple.c_str());
+                std::FILE* code = std::fopen(triple.c_str(), "wb");
+                std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
+            }
             next += chunk_size;
         }
 
