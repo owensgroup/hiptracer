@@ -34,9 +34,11 @@ test: $(EXECUTABLE) $(TRACER)
 	LD_PRELOAD=$(TRACER) $(EXECUTABLE)
 
 
+module.out: module.cpp
+	$(HIPCC) -O3 module.cpp -o $@
+
 clean:
 	rm -f $(EXECUTABLE)
 	rm -f $(OBJECTS)
 	rm -f $(HIP_PATH)/src/*.o
-
 

@@ -216,16 +216,16 @@ extern "C" {
 
         const std::byte* wrapper_bytes = reinterpret_cast<const std::byte*>(data);
         struct fb_wrapper_t {
-            uint64_t magic;
-            uint64_t version;
+            uint32_t magic;
+            uint32_t version;
             void* binary;
             void* unused;
         };
         fb_wrapper_t fbwrapper;
         std::memcpy(&fbwrapper, wrapper_bytes, sizeof(fb_wrapper_t));
 
-        printf("\t magic: %d\n", fbwrapper.magic);
-        printf("\t version: %d\n", fbwrapper.version);
+        printf("\t magic: %lx\n", fbwrapper.magic);
+        printf("\t version: %lu\n", fbwrapper.version);
         printf("\t binary: %p\n", fbwrapper.binary);
         printf("\t unused: %p\n", fbwrapper.unused);
 
@@ -246,22 +246,20 @@ extern "C" {
         std::memcpy(&fbheader, bin_bytes, sizeof(fb_header_t));
 
         printf("__ClangOffloadBundleHeader struct\n");
-        printf("\t magic: %s\n", fbheader.magic);
+        printf("\t magic: %.*s\n", sizeof(fbheader.magic), fbheader.magic);
         printf("\t numBundles: %lu\n", fbheader.numBundles);
 
         const std::byte* next = bin_bytes + sizeof(fb_header_t);
 
         for( int i = 0; i < fbheader.numBundles; i++) {
             struct desc_t {
-                uint64_t size;
                 uint64_t offset;
+                uint64_t size;
                 uint64_t tripleSize;
             };
 
             desc_t desc;
             std::memcpy(&desc, next, sizeof(desc));
-
-            printf("\t\t tripleSize: %lu\n", desc.tripleSize);
 
             // Determine chunk size 
             size_t chunk_size = sizeof(desc) + desc.tripleSize;
@@ -272,18 +270,21 @@ extern "C" {
             std::fwrite(bytes.data(), sizeof(std::byte), bytes.size(), fp);
 
             std::string triple;
-            triple.reserve(desc.tripleSize);
+            triple.reserve(desc.tripleSize + 1);
             std::memcpy(triple.data(), bytes.data() + sizeof(desc), desc.tripleSize);
+	    triple[desc.tripleSize] = '\0';
 
             printf("\t desc: ...\n");
             printf("\t\t offset: %lu\n", desc.offset);
             printf("\t\t size: %lu\n", desc.size);
             printf("\t\t tripleSize: %lu\n", desc.tripleSize);
-            printf("\t\t triple: %.*s\n", desc.tripleSize, triple.c_str());
+            printf("\t\t triple: %s\n", triple.c_str());
 
-            printf("\t\t writing code object:\n");
-            std::FILE* code = std::fopen(triple.c_str(), "wb");
-            std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
+	    if (desc.size > 0) {
+            	printf("\t\t writing code object:\n");
+            	std::FILE* code = std::fopen(triple.c_str(), "wb");
+            	std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
+	    }
 
             next += chunk_size;
         }
