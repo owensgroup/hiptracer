@@ -218,8 +218,8 @@ extern "C" {
         if (rocmLibHandle == NULL) { 
             rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
         }
-        if (hipGetDeviceProperties_fptr == NULL) {
-            hipGetDeviceProperties_fptr = (my_hipError_t (*) (my_hipDeviceProp_t*, int)) dlsym(rocmLibHandle, "hipGetDeviceProperties");
+        if (hipFree_fptr == NULL) {
+            hipFree_fptr = (my_hipError_t (*) (void*)) dlsym(rocmLibHandle, "hipFree");
         }
 
         printf("[%d] hooked: hipFree\n", g_curr_event);
@@ -256,8 +256,8 @@ extern "C" {
         if (rocmLibHandle == NULL) { 
             rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
         }
-        if (hipGetDeviceProperties_fptr == NULL) {
-            hipGetDeviceProperties_fptr = (my_hipError_t (*) (my_hipDeviceProp_t*, int)) dlsym(rocmLibHandle, "hipGetDeviceProperties");
+        if (hipMalloc_fptr == NULL) {
+            hipMalloc_fptr = (my_hipError_t (*) (void**, size_t)) dlsym(rocmLibHandle, "hipMalloc");
         }
 
         printf("[%d] hooked: hipMalloc\n", g_curr_event);
@@ -296,8 +296,8 @@ extern "C" {
         if (rocmLibHandle == NULL) { 
             rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
         }
-        if (hipGetDeviceProperties_fptr == NULL) {
-            hipGetDeviceProperties_fptr = (my_hipError_t (*) (my_hipDeviceProp_t*, int)) dlsym(rocmLibHandle, "hipGetDeviceProperties");
+        if (hipMemcpy_fptr == NULL) {
+            hipMemcpy_fptr = (my_hipError_t (*) (void*, const void*, size_t, my_hipMemcpyKind)) dlsym(rocmLibHandle, "hipMemcpy");
         }
 
         printf("[%d] hooked: hipMemcpy\n", g_curr_event);
@@ -383,16 +383,6 @@ extern "C" {
         }
         if (hipLaunchKernel_fptr == NULL) {
             hipLaunchKernel_fptr = ( my_hipError_t (*) (const void*, dim3, dim3, void**, size_t, my_hipStream_t)) dlsym(rocmLibHandle, "hipLaunchKernel");
-        }
-
-
-        g_curr_event++;
-
-        if (rocmLibHandle == NULL) { 
-            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
-        }
-        if (hipGetDeviceProperties_fptr == NULL) {
-            hipGetDeviceProperties_fptr = (my_hipError_t (*) (my_hipDeviceProp_t*, int)) dlsym(rocmLibHandle, "hipGetDeviceProperties");
         }
 
         event_t e;
