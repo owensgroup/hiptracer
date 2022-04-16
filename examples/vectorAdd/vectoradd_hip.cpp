@@ -39,22 +39,26 @@ THE SOFTWARE.
 #define THREADS_PER_BLOCK_Y  16
 #define THREADS_PER_BLOCK_Z  1
 
-__global__ void 
-vectoradd_float(float* __restrict__ a, const float* __restrict__ b, const float* __restrict__ c, int width, int height) 
+struct FUBAR {
+    float* __restrict__ a;
+    float* __restrict__ b;
+    float* __restrict__ c;
+    int width;
+    int height;
+};
 
-  {
- 
+
+__global__ void 
+vectoradd_float(FUBAR foo)
+{ 
       int x = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
       int y = hipBlockDim_y * hipBlockIdx_y + hipThreadIdx_y;
 
-      int i = y * width + x;
-      if ( i < (width * height)) {
-        a[i] = b[i] + c[i];
+      int i = y * foo.width + x;
+      if ( i < (foo.width * foo.height)) {
+        foo.a[i] = foo.b[i] + foo.c[i];
       }
-
-
-
-  }
+}
 
 #if 0
 __kernel__ void vectoradd_float(float* a, const float* b, const float* c, int width, int height) {
@@ -73,7 +77,6 @@ __kernel__ void vectoradd_float(float* a, const float* b, const float* c, int wi
 using namespace std;
 
 int main() {
-  
   float* hostA;
   float* hostB;
   float* hostC;
@@ -113,12 +116,23 @@ int main() {
   HIP_ASSERT(hipMemcpy(deviceB, hostB, NUM*sizeof(float), hipMemcpyHostToDevice));
   HIP_ASSERT(hipMemcpy(deviceC, hostC, NUM*sizeof(float), hipMemcpyHostToDevice));
 
+  size_t freeSpace;
+  size_t total;
+  HIP_ASSERT(hipMemGetInfo(&freeSpace, &total));
 
+  cout << "FREE " << freeSpace << endl;
+  cout << "TOTAL " << total << endl;
+  cout << "A " << deviceA << endl;
+  cout << "B " << deviceB << endl;
+  cout << "C " << deviceC << endl;
+
+
+  FUBAR foo {deviceA, deviceB, deviceC, WIDTH, HEIGHT };
   hipLaunchKernelGGL(vectoradd_float, 
                   dim3(WIDTH/THREADS_PER_BLOCK_X, HEIGHT/THREADS_PER_BLOCK_Y),
                   dim3(THREADS_PER_BLOCK_X, THREADS_PER_BLOCK_Y),
                   0, 0,
-                  deviceA ,deviceB ,deviceC ,WIDTH ,HEIGHT);
+                  foo);
 
 
   HIP_ASSERT(hipMemcpy(hostA, deviceA, NUM*sizeof(float), hipMemcpyDeviceToHost));

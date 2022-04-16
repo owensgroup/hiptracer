@@ -2,11 +2,14 @@
 #define __HIP_TRACE_H__
 
 #include <vector>
+#include <cstddef>
 
 typedef enum HIP_EVENT {
     EVENT_UNDEFINED = 0,
     EVENT_DEVICE,
-    EVENT_MEM,
+    EVENT_MALLOC,
+    EVENT_MEMCPY,
+    EVENT_FREE,
     EVENT_LAUNCH
 } HIP_EVENT;
 

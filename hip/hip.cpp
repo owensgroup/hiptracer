@@ -4,6 +4,7 @@
 #include <iostream>
 #include <cstring>
 #include <string>
+#include <functional>
 
 #include <dlfcn.h>
 #include <stddef.h>
@@ -51,24 +52,23 @@ data_t as_bytes(T value, Targs... Fargs) // recursive variadic function
     return data;
 }
 
-void write_header(std::FILE* fp, header_t* header)
+void write_event_list(std::FILE* fp)
 {
     header_t hdr;
     hdr.magic = 0xDEADBEEF;
-    if (header) {
-        hdr.num_events = header->num_events;
-    }
-    std::fwrite(&hdr, sizeof(header_t), 1, fp);
-}
 
-void write_event_list(std::FILE* fp)
-{
+    hdr.num_events = g_event_list.size();
+    std::fwrite(&hdr, sizeof(header_t), 1, fp);
+
     std::fwrite(g_event_list.data(), sizeof(event_t), g_event_list.size(), fp);
 }
 
 void write_data(std::FILE* fp)
 {
-    std::fwrite(g_data_list.data(), sizeof(data_t), g_data_list.size(), fp);
+    for (int i = 0; i < g_data_list.size(); i++) {
+        std::printf("chunk %d of size %d\n", i, g_data_list[i].bytes.size());
+        std::fwrite(g_data_list[i].bytes.data(), sizeof(std::byte), g_data_list[i].bytes.size(), fp);
+    }
 }
 
 void flush_files()
@@ -202,14 +202,20 @@ extern "C" {
         hipMemcpyDefault = 4
     } my_hipMemcpyKind;
 
+    typedef void* my_hipFunction_t;
+
     void* rocmLibHandle = NULL;
 
     my_hipError_t (*hipGetDeviceProperties_fptr)(my_hipDeviceProp_t*,int) = NULL;
     void* (*hipRegisterFatBinary_fptr)(const void*) = NULL;
     my_hipError_t (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, my_hipStream_t) = NULL;
+    my_hipError_t (*hipModuleLaunchKernel_fptr)(my_hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
+                                                unsigned int, my_hipStream_t, void**, void**) = NULL;
     my_hipError_t (*hipFree_fptr)(void*) = NULL;
     my_hipError_t (*hipMalloc_fptr)(void**, size_t) = NULL;
     my_hipError_t (*hipMemcpy_fptr)(void*, const void*, size_t, my_hipMemcpyKind) = NULL;
+
+    const char* (*hipKernelNameRefByPtr_fptr)(const void*, my_hipStream_t) = NULL;
 
     my_hipError_t hipFree(void *p)
     {
@@ -229,7 +235,7 @@ extern "C" {
         event_t e;
         e.id = g_curr_event;
         e.name = __func__;
-        e.type = EVENT_MEM;
+        e.type = EVENT_FREE;
         e.offset = g_curr_offset;
 
         data_t chunk;
@@ -260,19 +266,25 @@ extern "C" {
             hipMalloc_fptr = (my_hipError_t (*) (void**, size_t)) dlsym(rocmLibHandle, "hipMalloc");
         }
 
+
         printf("[%d] hooked: hipMalloc\n", g_curr_event);
-        printf("[%d] \t p: %p\n", g_curr_event, p);
-        printf("[%d] \t size: %lu\n", g_curr_event, size);
         printf("[%d] calling: hipMalloc\n", g_curr_event); 
+        my_hipError_t result = (*hipMalloc_fptr)(p, size);
+
+
+        printf("[%d] \t result: %d\n", g_curr_event, result);
+        printf("[%d] hooked: hipMalloc\n", g_curr_event);
+        printf("[%d] \t returned ptr: %p\n", g_curr_event, *p);
+        printf("[%d] \t size: %lu\n", g_curr_event, size);
 
         event_t e;
         e.id = g_curr_event;
         e.name = __func__;
-        e.type = EVENT_MEM;
+        e.type = EVENT_MALLOC;
         e.offset = g_curr_offset;
 
         data_t chunk;
-        chunk = as_bytes(p, size);
+        chunk = as_bytes(*p, size);
 
         e.size = chunk.bytes.size();
 
@@ -281,12 +293,7 @@ extern "C" {
 
         g_curr_offset += chunk.size;
 
-        my_hipError_t result = (*hipMalloc_fptr)(p, size);
-
-        printf("[%d] \t result: %d\n", g_curr_event, result);
-        return result;
-
-        
+        return result; 
     }
 
     my_hipError_t hipMemcpy(void *dst, const void *src, size_t size, my_hipMemcpyKind kind)
@@ -310,18 +317,30 @@ extern "C" {
         event_t e;
         e.id = g_curr_event;
         e.name = __func__;
-        e.type = EVENT_MEM;
+        e.type = EVENT_MEMCPY;
         e.offset = g_curr_offset;
+
+        printf("Writing at offset %d\n", e.offset);
 
         data_t chunk;
         chunk = as_bytes(dst, src, size, kind);
 
         e.size = chunk.bytes.size();
 
+        std::printf("Event size %d\n", e.size);
+
         g_event_list.push_back(e);
         g_data_list.push_back(chunk);
 
         g_curr_offset += chunk.size;
+
+        data_t src_bytes;
+        src_bytes.bytes.resize(size);
+        std::memcpy(src_bytes.bytes.data(), src, size);
+        src_bytes.size = size;
+
+        g_data_list.push_back(src_bytes);
+        g_curr_offset += src_bytes.size;
 
         my_hipError_t result = (*hipMemcpy_fptr)(dst, src, size, kind);
 
@@ -350,7 +369,7 @@ extern "C" {
         event_t e;
         e.id = g_curr_event;
         e.name = __func__;
-        e.type = EVENT_MEM;
+        e.type = EVENT_DEVICE;
         e.offset = g_curr_offset;
 
         data_t chunk;
@@ -373,7 +392,7 @@ extern "C" {
             dim3 numBlocks,
             dim3 dimBlocks,
             void** args,
-            size_t sharedMemBytes,
+            unsigned int sharedMemBytes,
             my_hipStream_t stream)
     {
         g_curr_event++;
@@ -383,29 +402,60 @@ extern "C" {
         }
         if (hipLaunchKernel_fptr == NULL) {
             hipLaunchKernel_fptr = ( my_hipError_t (*) (const void*, dim3, dim3, void**, size_t, my_hipStream_t)) dlsym(rocmLibHandle, "hipLaunchKernel");
+        } 
+
+        if (hipKernelNameRefByPtr_fptr == NULL) {
+            hipKernelNameRefByPtr_fptr = ( const char* (*) (const void*, my_hipStream_t)) dlsym(rocmLibHandle, "hipKernelNameRefByPtr");
         }
 
+        std::string kernel_name((*hipKernelNameRefByPtr_fptr)(function_address, stream));
+        //std::cout << kernel_name << std::endl;
+        //std::cout << &numBlocks << std::endl;
+        //std::cout << &dimBlocks << std::endl;
+        //std::cout << &sharedMemBytes << std::endl;
+        //std::cout << &stream << std::endl;
+
+        //std::byte* args_start = ((std::byte*)&dimBlocks) + sizeof(dimBlocks);
+        //std::byte* args_end = ((std::byte*)&sharedMemBytes);
+#define ARGS_CHEAT 32
+        std::vector<std::byte> args_bytes(ARGS_CHEAT);
+
+        std::memcpy(args_bytes.data(), args[0], ARGS_CHEAT);
+
+        data_t name_chunk;
+        name_chunk.bytes.resize(kernel_name.size());
+        name_chunk.size = kernel_name.size();
+        std::memcpy(name_chunk.bytes.data(), kernel_name.data(), name_chunk.size);
+
+        data_t arg_chunk;
+        arg_chunk.size = args_bytes.size();
+        arg_chunk.bytes = args_bytes;
+ 
         event_t e;
         e.id = g_curr_event;
         e.name = __func__;
-        e.type = EVENT_MEM;
+        e.type = EVENT_LAUNCH;
         e.offset = g_curr_offset;
 
-        data_t chunk;
-        chunk = as_bytes(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream); 
+        printf("OFFSET %d\n", g_curr_offset);
 
-        e.size = chunk.bytes.size();
+        data_t chunk;
+        chunk = as_bytes(function_address, numBlocks, dimBlocks, sharedMemBytes, stream, name_chunk.size, arg_chunk.size);
+
+        e.size = chunk.bytes.size() + arg_chunk.bytes.size() + name_chunk.bytes.size();
 
         g_event_list.push_back(e);
         g_data_list.push_back(chunk);
+        g_data_list.push_back(name_chunk);
+        g_data_list.push_back(arg_chunk);
 
-        g_curr_offset += chunk.size;
+        g_curr_offset += e.size; 
 
         printf("[%d] hooked: hipLaunchKernel\n", g_curr_event);
-        printf("[%d] \t function_address: %p\n", g_curr_event,  function_address);
+        printf("[%d] \t kernel_name: %s\n", g_curr_event, kernel_name.c_str());
+        printf("[%d] \t function_address: %lx\n", g_curr_event, (uint64_t) function_address);
         printf("[%d] \t numBlocks: %d %d %d\n", g_curr_event, numBlocks.x, numBlocks.y, numBlocks.z);
         printf("[%d] \t dimBlocks: %d %d %d\n", g_curr_event, dimBlocks.x, dimBlocks.y, dimBlocks.z);
-        printf("[%d] \t args: %p\n", g_curr_event, args);
         printf("[%d] \t sharedMemBytes: %lu\n", g_curr_event, sharedMemBytes);
         printf("[%d] \t stream: %p\n", g_curr_event, stream); 
         printf("[%d] calling: hipLaunchKernel\n", g_curr_event);
@@ -415,8 +465,67 @@ extern "C" {
         printf("[%d] \t result: %d\n", g_curr_event, result);
 
         return result;
+
     }
 
+
+
+    my_hipError_t hipModuleLaunchKernel(my_hipFunction_t f,
+            unsigned int gridDimX,
+            unsigned int gridDimY,
+            unsigned int gridDimZ,
+            unsigned int blockDimX,
+            unsigned int blockDimY,
+            unsigned int blockDimZ,
+            unsigned int sharedMemBytes,
+            my_hipStream_t stream,
+            void ** kernelParams,
+            void ** extra)
+    {
+        g_curr_event++;
+
+        if (rocmLibHandle == NULL) {
+            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
+        }
+        if (hipModuleLaunchKernel_fptr == NULL) {
+            hipModuleLaunchKernel_fptr = ( my_hipError_t (*) (my_hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
+                                                              unsigned int, my_hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
+        }
+
+        /*
+        event_t e;
+        e.id = g_curr_event;
+        e.name = __func__;
+        e.type = EVENT_MEM;
+        e.offset = g_curr_offset;
+
+        data_t chunk;
+        chunk = as_bytes(
+
+        e.size = chunk.bytes.size();
+
+        g_event_list.push_back(e);
+        g_data_list.push_back(chunk);
+
+        g_curr_offset += chunk.size;
+        */
+
+        printf("[%d] hooked: hipModuleLaunchKernel\n", g_curr_event);
+        //printf("[%d] \t function_address: %p\n", g_curr_event,  function_address);
+        printf("[%d] \t numBlocks: %d %d %d\n", g_curr_event, gridDimX, gridDimY, gridDimZ);
+        printf("[%d] \t dimBlocks: %d %d %d\n", g_curr_event, blockDimX, blockDimY, blockDimZ); 
+        printf("[%d] \t sharedMemBytes: %lu\n", g_curr_event, sharedMemBytes);
+        printf("[%d] \t stream: %p\n", g_curr_event, stream); 
+        printf("[%d] calling: hipModuleLaunchKernel\n", g_curr_event);
+
+        my_hipError_t result = (*hipModuleLaunchKernel_fptr)(f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ,
+                                                                sharedMemBytes, stream, kernelParams, extra);
+
+        printf("[%d] \t result: %d\n", g_curr_event, result);
+
+        return result;
+
+    }
 
     void* __hipRegisterFatBinary(const void* data)
     {
