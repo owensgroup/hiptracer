@@ -4,44 +4,39 @@
 
 #include "hip/hip_runtime.h"
 
+#include "hsakmt.h"
+#include "kfd_ioctl.h"
+
 // header_t, event_t
 #include "trace.h"
 
+// ArgInfo, getArgInfo
 #include "elf.h"
 
 #define HIPTRACER_BIGALLOC 0
 
-std::unordered_map<uint64_t, uint64_t> allocations;
+std::unordered_map<uintptr_t, uintptr_t> allocations;
 
-uint64_t getDevPtr(uint64_t p) 
+uint64_t gPageSize = 4096;
+
+uint64_t getAllocatedSize(uint64_t p) 
 {
     return allocations[p];
 }
 
 int main()
 {
-    // Open trace file
-    std::FILE* events_fp = std::fopen("trace.events", "rb");
-    std::FILE* data_fp = std::fopen("trace.data", "rb");
-    
-    if (events_fp == nullptr) {
-        std::printf("Unable to open events file\n");
-    }
+    Trace trace;
+    trace.open("trace");
 
-    header_t header;
-    std::fread(&header, sizeof(header), 1, events_fp);
+    std::FILE* data_fp = trace.data_fp;
 
-    std::printf("magic: %lx\n", header.magic);
-    std::printf("num events: %lu\n", header.num_events);
-
-    std::vector<event_t> events(header.num_events);
+    std::vector<event_t>& events = trace.events;
     std::vector<data_t> chunks;
-
-    std::fread(events.data(), sizeof(events[0]), header.num_events, events_fp);
 
     // Iterate over events 
 
-    for (int i = 0; i < header.num_events; i++)
+    for (int i = 0; i < events.size(); i++)
     {
         event_t event = events[i];
 
@@ -53,10 +48,9 @@ int main()
 
             std::printf("\thipGetDeviceProperties\n");
 
-            // TODO: Map pointer value from trace to _my_ pointer
             hipDeviceProp_t* devProp = NULL;
             hipDeviceProp_t* my_devProp = new hipDeviceProp_t;
-            // TODO: Remap trace devices to replay devices
+
             int device;
 
             std::fseek(data_fp, event.offset, SEEK_SET);
@@ -93,9 +87,8 @@ int main()
                 std::fread(buffer.data(), sizeof(std::byte), size, data_fp); 
 
                 std::printf("\t replaying HostToDev MemCpy\n");
-
-                void* devPtr = (void*) getDevPtr((uint64_t) dst);
-                hipMemcpy(devPtr, buffer.data(), size, kind);
+ 
+                hipMemcpy(dst, buffer.data(), size, kind);
             }
         } else if (event.type == EVENT_LAUNCH) {
             std::printf("\thipLaunchKernel\n");
@@ -132,37 +125,70 @@ int main()
 
             std::printf("\tGetting arg info from code object\n");
             uint64_t total_argsize = 0;
+            
             std::vector<ArgInfo> arg_infos = getArgInfo();
+
+            std::printf("\tChecking args for allocations\n");
             for (int i = 0; i < arg_infos.size(); i++) {
                 total_argsize += arg_infos[i].size;
+                std::printf("value kind %s\n", arg_infos[i].value_kind.c_str());
+                std::printf("Access %s\n", arg_infos[i].access.c_str());
+
+                if (arg_infos[i].value_kind == "global buffer") {
+                    // Check for pointers in allocation table
+                }
             }
+            
             std::printf("\t arg_size from code object%d\n", total_argsize);
             std::printf("\t args_size from trace %d\n", args_size);
 
-            std::printf("\tChecking args for allocations\n");
+            std::printf("\t ... Performing launch ... \n");
+            hipLaunch
 
         } else if (event.type == EVENT_MALLOC) {
             std::cout << "\thipMalloc" << std::endl;
 
-            void* ptr;
+            void* ptr = NULL; 
             size_t size;
 
             std::fread(&ptr, sizeof(void*), 1, data_fp);
             std::fread(&size, sizeof(size_t), 1, data_fp);
 
             std::printf("\tRead pointer %p\n", ptr);
-            void* realPtr;
-            if (hipMalloc(&realPtr, size) == hipSuccess) {
-                allocations[(uint64_t) ptr] = (uint64_t) realPtr;
-                std::printf("\tAdding allocation mapping\n");
-            }
+            std::printf("\tRead size %lu\n", size); 
+
+            void* ret = NULL;
+            int status = hipMalloc(&ret, size);
+
+            if (!ret) {
+                std::printf("Failed to provide traced allocation (error: %d)\n", status);
+                return -1;
+            } else {
+                std::printf("Allocation succeeded at location %p\n", ptr);
+            } 
+
+            uintptr_t ptr_as_int = reinterpret_cast<uintptr_t>(ptr);
+            uintptr_t ret_as_int = reinterpret_cast<uintptr_t>(ret);
+
+            allocations[ptr_as_int] = ret_as_int;
+
         } else if (event.type == EVENT_FREE) {
             std::printf("\thipFree\n");
             std::fseek(data_fp, event.offset, SEEK_SET);
 
             void* p = NULL;
             std::fread(&p, sizeof(void*), 1, data_fp);
-            std::printf("\t\tp:%p\n", p);
+            std::printf("\t\tTrace freed ptr:%p\n", p);
+
+            void* real_ptr = NULL;
+            // Get actual pointer from allocations table
+            uintptr_t p_as_int = reinterpret_cast<uintptr_t>(p);
+            if (allocations.find(p_as_int) != allocations.end()) {
+                real_ptr = reinterpret_cast<void*>(allocations[p_as_int]);
+            }
+            if (real_ptr) {
+                hipFree(real_ptr);
+            }
 
         } else {
             // Unhandled event type

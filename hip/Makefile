@@ -4,7 +4,7 @@ OUT	= libhiptracer.so
 CC	 = clang++
 FLAGS	 = -c -Wall -fPIC -pedantic -std=c++17 -g
 LFLAGS	 = -ldl
-INC = ../include/
+INC = ../trace/
 
 all: hiptracer.pic.o
 	$(CC) -shared $(OBJS) -o $(OUT) $(LFLAGS)

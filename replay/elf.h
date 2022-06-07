@@ -7,7 +7,6 @@
 #include <string>
 #include <map>
 
-
 using namespace ELFIO;
 
 struct ArgInfo {
