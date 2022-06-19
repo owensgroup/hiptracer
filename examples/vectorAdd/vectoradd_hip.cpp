@@ -49,30 +49,17 @@ struct FUBAR {
 
 
 __global__ void 
-vectoradd_float(FUBAR foo)
+vectoradd_float(float* __restrict__ a, float* __restrict__ b, float* __restrict__ c, int width,
+                int height)
 { 
       int x = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
       int y = hipBlockDim_y * hipBlockIdx_y + hipThreadIdx_y;
 
-      int i = y * foo.width + x;
-      if ( i < (foo.width * foo.height)) {
-        foo.a[i] = foo.b[i] + foo.c[i];
+      int i = y * width + x;
+      if ( i < (width * height)) {
+        a[i] = b[i] + c[i];
       }
 }
-
-#if 0
-__kernel__ void vectoradd_float(float* a, const float* b, const float* c, int width, int height) {
-
-  
-  int x = blockDimX * blockIdx.x + threadIdx.x;
-  int y = blockDimY * blockIdy.y + threadIdx.y;
-
-  int i = y * width + x;
-  if ( i < (width * height)) {
-    a[i] = b[i] + c[i];
-  }
-}
-#endif
 
 using namespace std;
 
@@ -126,13 +113,11 @@ int main() {
   cout << "B " << deviceB << endl;
   cout << "C " << deviceC << endl;
 
-
-  FUBAR foo {deviceA, deviceB, deviceC, WIDTH, HEIGHT };
   hipLaunchKernelGGL(vectoradd_float, 
                   dim3(WIDTH/THREADS_PER_BLOCK_X, HEIGHT/THREADS_PER_BLOCK_Y),
                   dim3(THREADS_PER_BLOCK_X, THREADS_PER_BLOCK_Y),
                   0, 0,
-                  foo);
+                  deviceA, deviceB, deviceC, WIDTH, HEIGHT);
 
 
   HIP_ASSERT(hipMemcpy(hostA, deviceA, NUM*sizeof(float), hipMemcpyDeviceToHost));
@@ -140,6 +125,7 @@ int main() {
   // verify the results
   errors = 0;
   for (i = 0; i < NUM; i++) {
+	printf("%f\n", hostA[i]);
     if (hostA[i] != (hostB[i] + hostC[i])) {
       errors++;
     }

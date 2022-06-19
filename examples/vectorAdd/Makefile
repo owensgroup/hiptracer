@@ -16,26 +16,18 @@ TRACER=../../hip/libhiptracer.so
 
 .PHONY: test
 
-
-all: $(EXECUTABLE) $(TRACER) test
-
-CXXFLAGS =
+CXXFLAGS=
 
 CXX=$(HIPCC)
-
-
-$(EXECUTABLE): $(OBJECTS) 
-	$(HIPCC) -O3 $(OBJECTS) -o $@
-
-$(TRACER): ../../hip/hip.cpp
-	make -C ../../hip/
 
 test: $(EXECUTABLE) $(TRACER)
 	LD_PRELOAD=$(TRACER) $(EXECUTABLE)
 
+$(EXECUTABLE): $(OBJECTS) 
+	$(HIPCC) -g -O0 $(OBJECTS) -o $@
 
-module.out: module.cpp
-	$(HIPCC) -O3 module.cpp -o $@
+$(TRACER): ../../hip/hip.cpp
+	make -C ../../hip/
 
 clean:
 	rm -f $(EXECUTABLE)

@@ -13,6 +13,8 @@
 
 // event_t, header_t, data_t
 #include "trace.h"
+// ArgInfo, getArgInfo
+#include "elf.h"
 
 const char* g_prog_name = "./vectoradd"; //FIXME
 int g_curr_event = 0;
@@ -22,6 +24,8 @@ typedef void* my_hipStream_t;
 std::vector<event_t> g_event_list;
 std::vector<data_t> g_data_list;
 uint64_t g_curr_offset = 0;
+
+#define CODE_OBJECT_FILENAME "gfx908.code"
 
 template<typename T>
 data_t as_bytes(T a)
@@ -202,13 +206,15 @@ extern "C" {
         hipMemcpyDefault = 4
     } my_hipMemcpyKind;
 
-    typedef void* my_hipFunction_t;
-
+	typedef void* my_hipFunction_t;
+	
     void* rocmLibHandle = NULL;
 
     my_hipError_t (*hipGetDeviceProperties_fptr)(my_hipDeviceProp_t*,int) = NULL;
     void* (*hipRegisterFatBinary_fptr)(const void*) = NULL;
     my_hipError_t (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, my_hipStream_t) = NULL;
+    my_hipError_t (*hipSetupArgument_fptr)(const void* arg, size_t size, size_t offset) = NULL;
+
     my_hipError_t (*hipModuleLaunchKernel_fptr)(my_hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
                                                 unsigned int, my_hipStream_t, void**, void**) = NULL;
     my_hipError_t (*hipFree_fptr)(void*) = NULL;
@@ -216,6 +222,7 @@ extern "C" {
     my_hipError_t (*hipMemcpy_fptr)(void*, const void*, size_t, my_hipMemcpyKind) = NULL;
 
     const char* (*hipKernelNameRefByPtr_fptr)(const void*, my_hipStream_t) = NULL;
+	const char* (*hipKernelNameRef_fptr)(const my_hipFunction_t) = NULL;
 
     my_hipError_t hipFree(void *p)
     {
@@ -388,11 +395,27 @@ extern "C" {
         return result;
     }
 
+    my_hipError_t hipSetupArgument(const void * arg, size_t size, size_t offset)
+    {
+         g_curr_event++;
+
+        if (rocmLibHandle == NULL) {
+            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
+        }
+        if (hipSetupArgument_fptr == NULL) {
+            hipSetupArgument_fptr = ( my_hipError_t (*) (const void*, size_t size, size_t offset)) dlsym(rocmLibHandle, "hipSetupArgument");
+        } 
+
+        std::printf("Calling setupargument \n");
+
+        return (hipSetupArgument_fptr)(arg, size, offset);
+    }
+
     my_hipError_t hipLaunchKernel(const void* function_address,
             dim3 numBlocks,
             dim3 dimBlocks,
             void** args,
-            unsigned int sharedMemBytes,
+            unsigned int sharedMemBytes ,
             my_hipStream_t stream)
     {
         g_curr_event++;
@@ -409,18 +432,18 @@ extern "C" {
         }
 
         std::string kernel_name((*hipKernelNameRefByPtr_fptr)(function_address, stream));
-        //std::cout << kernel_name << std::endl;
-        //std::cout << &numBlocks << std::endl;
-        //std::cout << &dimBlocks << std::endl;
-        //std::cout << &sharedMemBytes << std::endl;
-        //std::cout << &stream << std::endl;
+		
+		std::vector<ArgInfo> arg_infos = getArgInfo(CODE_OBJECT_FILENAME);
 
-        //std::byte* args_start = ((std::byte*)&dimBlocks) + sizeof(dimBlocks);
-        //std::byte* args_end = ((std::byte*)&sharedMemBytes);
-#define ARGS_CHEAT 32
-        std::vector<std::byte> args_bytes(ARGS_CHEAT);
-
-        std::memcpy(args_bytes.data(), args[0], ARGS_CHEAT);
+		std::printf("ARG INFO SIZE %d\n", arg_infos.size());
+		std::vector<std::byte> arg_data;
+		arg_data.resize(0);
+		
+		for (int i = 0; i < arg_infos.size(); i++) {
+			arg_data.resize(arg_data.size() + arg_infos[i].size);
+			std::memcpy(arg_data.data() + arg_infos[i].offset, args[i], arg_infos[i].size);
+			std::printf("adding %d\n", arg_infos[i].size);
+		}
 
         data_t name_chunk;
         name_chunk.bytes.resize(kernel_name.size());
@@ -428,8 +451,10 @@ extern "C" {
         std::memcpy(name_chunk.bytes.data(), kernel_name.data(), name_chunk.size);
 
         data_t arg_chunk;
-        arg_chunk.size = args_bytes.size();
-        arg_chunk.bytes = args_bytes;
+        arg_chunk.size = arg_data.size();
+        arg_chunk.bytes = arg_data;
+		
+		std::printf("arg chunk size %d\n", arg_chunk.size);
  
         event_t e;
         e.id = g_curr_event;
@@ -488,27 +513,29 @@ extern "C" {
             rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
         }
         if (hipModuleLaunchKernel_fptr == NULL) {
-            hipModuleLaunchKernel_fptr = ( my_hipError_t (*) (my_hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
-                                                              unsigned int, my_hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
+            hipModuleLaunchKernel_fptr = ( my_hipError_t (*) (my_hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, my_hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
+        }
+		
+        if (hipKernelNameRef_fptr == NULL) {
+            hipKernelNameRef_fptr = ( const char* (*) (const my_hipFunction_t)) dlsym(rocmLibHandle, "hipKernelNameRef");
         }
 
-        /*
-        event_t e;
-        e.id = g_curr_event;
-        e.name = __func__;
-        e.type = EVENT_MEM;
-        e.offset = g_curr_offset;
+        std::string kernel_name((*hipKernelNameRef_fptr)(f));
+		
+		printf("kernel name %s\n", kernel_name.c_str());
 
-        data_t chunk;
-        chunk = as_bytes(
-
-        e.size = chunk.bytes.size();
-
-        g_event_list.push_back(e);
-        g_data_list.push_back(chunk);
-
-        g_curr_offset += chunk.size;
-        */
+        // data_t chunk;
+//         chunk = as_bytes(function_address, numBlocks, dimBlocks, sharedMemBytes, stream, name_chunk.size, arg_chunk.size);
+//
+//         e.size = chunk.bytes.size() + arg_chunk.bytes.size() + name_chunk.bytes.size();
+//
+//         g_event_list.push_back(e);
+//         g_data_list.push_back(chunk);
+//         g_data_list.push_back(name_chunk);
+//         g_data_list.push_back(arg_chunk);
+//
+//         g_curr_offset += e.size;
+//
 
         printf("[%d] hooked: hipModuleLaunchKernel\n", g_curr_event);
         //printf("[%d] \t function_address: %p\n", g_curr_event,  function_address);
@@ -593,8 +620,9 @@ extern "C" {
 
             if (desc.size > 0) {
                 printf("[%d] writing code object for %s:\n", g_curr_event, triple.c_str());
-                std::FILE* code = std::fopen(triple.c_str(), "wb");
+                std::FILE* code = std::fopen(CODE_OBJECT_FILENAME, "wb");
                 std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
+				std::fclose(code);
             }
             next += chunk_size;
         }
