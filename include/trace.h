@@ -27,6 +27,8 @@ typedef struct event_t {
 typedef struct header_t {
     uint64_t magic;
     uint64_t num_events;
+    uint64_t code_offset;
+    uint64_t code_size;
 } header_t; 
 
 typedef struct data_t {

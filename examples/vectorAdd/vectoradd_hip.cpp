@@ -48,6 +48,13 @@ struct FUBAR {
 };
 
 
+__device__ float*
+some_device(float* a)
+
+{
+    return a;
+}
+
 __global__ void 
 vectoradd_float(float* __restrict__ a, float* __restrict__ b, float* __restrict__ c, int width,
                 int height)
@@ -125,7 +132,6 @@ int main() {
   // verify the results
   errors = 0;
   for (i = 0; i < NUM; i++) {
-	printf("%f\n", hostA[i]);
     if (hostA[i] != (hostB[i] + hostC[i])) {
       errors++;
     }

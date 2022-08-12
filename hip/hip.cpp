@@ -21,6 +21,7 @@ int g_curr_event = 0;
 
 typedef void* my_hipStream_t;
 
+header_t hdr;
 std::vector<event_t> g_event_list;
 std::vector<data_t> g_data_list;
 uint64_t g_curr_offset = 0;
@@ -58,7 +59,6 @@ data_t as_bytes(T value, Targs... Fargs) // recursive variadic function
 
 void write_event_list(std::FILE* fp)
 {
-    header_t hdr;
     hdr.magic = 0xDEADBEEF;
 
     hdr.num_events = g_event_list.size();
@@ -327,14 +327,10 @@ extern "C" {
         e.type = EVENT_MEMCPY;
         e.offset = g_curr_offset;
 
-        printf("Writing at offset %d\n", e.offset);
-
         data_t chunk;
         chunk = as_bytes(dst, src, size, kind);
 
         e.size = chunk.bytes.size();
-
-        std::printf("Event size %d\n", e.size);
 
         g_event_list.push_back(e);
         g_data_list.push_back(chunk);
@@ -435,14 +431,20 @@ extern "C" {
 		
 		std::vector<ArgInfo> arg_infos = getArgInfo(CODE_OBJECT_FILENAME);
 
-		std::printf("ARG INFO SIZE %d\n", arg_infos.size());
-		std::vector<std::byte> arg_data;
-		arg_data.resize(0);
+		std::printf("ARG INFO SIZE %d\n", arg_infos.size());	
 		
-		for (int i = 0; i < arg_infos.size(); i++) {
-			arg_data.resize(arg_data.size() + arg_infos[i].size);
+        size_t total_size = 0;
+        if (arg_infos.size() > 0) {
+            total_size = arg_infos[arg_infos.size() - 1].offset + arg_infos[arg_infos.size() - 1].size;
+        }
+        std::printf("total size %d\n", total_size);
+
+        std::vector<std::byte> arg_data(total_size);
+
+        for(int i = 0; i < arg_infos.size(); i++) {
+            std::printf("offset: %d\n", arg_infos[i].offset);
+            std::printf("adding %d\n", arg_infos[i].size);
 			std::memcpy(arg_data.data() + arg_infos[i].offset, args[i], arg_infos[i].size);
-			std::printf("adding %d\n", arg_infos[i].size);
 		}
 
         data_t name_chunk;
@@ -490,10 +492,7 @@ extern "C" {
         printf("[%d] \t result: %d\n", g_curr_event, result);
 
         return result;
-
     }
-
-
 
     my_hipError_t hipModuleLaunchKernel(my_hipFunction_t f,
             unsigned int gridDimX,
@@ -619,10 +618,23 @@ extern "C" {
             triple[desc.tripleSize] = '\0';
 
             if (desc.size > 0) {
+                /* Write the code object to a file
                 printf("[%d] writing code object for %s:\n", g_curr_event, triple.c_str());
                 std::FILE* code = std::fopen(CODE_OBJECT_FILENAME, "wb");
                 std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
-				std::fclose(code);
+				std::fclose(code); */
+
+                // Add code object directly to data list as its own chunk
+                //data_t code_object;
+                //code_object.size = desc.size;
+                //code_object.bytes.reserve(desc.size);
+
+                //std::memcpy(code_object.bytes.data(), bin_bytes + desc.offset, desc.size);
+
+                //g_data_list.push_back(code_object);
+                //hdr.code_offset = g_curr_offset;
+                //hdr.code_size = code_object.size;
+                //g_curr_offset += code_object.size;
             }
             next += chunk_size;
         }
