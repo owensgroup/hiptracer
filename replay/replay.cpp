@@ -9,6 +9,7 @@
 
 // ArgInfo, getArgInfo
 #include "elf.h"
+#include "elfio/elfio.hpp"
 
 #include <readline/readline.h>
 
@@ -24,16 +25,11 @@ uintptr_t getReplayPointer(uintptr_t p)
     return allocations[(uintptr_t)p];
 }
 
-int set_content()
-{
-    char* content = "Line 1: Some content \nLine 2: Other\nLine 3: Something\n";
-    rl_insert_text(content);
-    rl_startup_hook = (rl_hook_func_t *) NULL;
-    return 0;
-}
 
 int main()
 {
+    std::system("cp ./gfx908.bak ./gfx908.code");
+    
     trace.open("trace");
 
     std::FILE* data_fp = trace.data_fp;
@@ -44,13 +40,13 @@ int main()
     char* line = NULL;
 
     while((line = readline("command > ")) != NULL) {
-        if (line[0] == 'i') {
-            // Print disasm
+        if (line[0] == 'i') { // INSPECT
             
-            std::system("/opt/rocm/bin/")
+            std::system("llvm-objdump -d './gfx908.code'");
+            
         }
 
-        if (line[0] == 'r') {
+        if (line[0] == 'r') { // RUN
             // Iterate over events 
         
             for (int i = 0; i < events.size(); i++)
@@ -274,13 +270,65 @@ int main()
         	auto host = host_buffers.begin()->second;
         	
         	std::printf("A[5]=%f\n",((float*)host.data())[5]);
-        
-        
-            return 0;
-
+            
+            return 0; // FIXME
         }
         
-        else if (line[0] == 'i') {
+        if (line[0] == 'e') { // EDIT
+            // Get offset from input
+            std::string l(line);
+            if (l.find(" ") == std::string::npos) {
+                std::printf("e [offset]\nChoose program offset (decimal)\n");
+                continue;
+            }
+            std::string off_str = l.substr(l.find(" "), l.size());
+            uint16_t offset = std::atoi(off_str.c_str()); 
+            
+            elfio reader;
+            if (!reader.load("./gfx908.code")) {
+                std::printf("Failed to load\n");
+                continue;
+            }
+        
+            Elf_Half sec_num = reader.sections.size(); 
+            for (int i = 0; i < sec_num; i++) {
+                section* psec = reader.sections[i];
+            
+                if (psec) {                    
+                    std::string sec_name = psec->get_name();
+                    const std::string TEXT = ".text";
+                    if(sec_name == TEXT) {
+                        std::printf("Found .text\n");                               
+                        std::vector<std::byte> code_buff(psec->get_size());
+                        std::memcpy(code_buff.data(), psec->get_data(), psec->get_size());
+                        
+                        uint16_t jump = (uint16_t) psec->get_size(); 
+                        uint32_t new_inst = 0xBF820000; // s_branch [offset]
+                        uint32_t ret_inst = 0xBF820000; // s_branch [offset]
+                        new_inst |= jump / 4 - 1;
+                        ret_inst |= offset / 4;
+                        
+                        uint32_t old_inst = 0x0; // FIXME ~ Target instr could be 64 bits, ask llvm-mc
+                        std::memcpy(&old_inst, &code_buff[offset], sizeof(old_inst));
+                        std::memcpy(&code_buff[offset], &new_inst, sizeof(old_inst));
+                        
+                        // Instrument before old instructions
+                        std::string new_code = "\x00\x00\x80\xBF";
+                        //std::printf("new: %s\n", new_code.c_str());
+                        //new_code.append((char*) &old_inst, sizeof(old_inst));
+                        //new_code.append((char*) &ret_inst, sizeof(ret_inst));
+                        
+                        psec->set_data((const char*)code_buff.data(), code_buff.size());
+                        psec->append_data(new_code);
+                        
+                        psec->append_data((char*) &old_inst, sizeof(old_inst));
+                        psec->append_data((char*) &ret_inst, sizeof(ret_inst));
+                        
+                        reader.save("./gfx908.code");
+                    }
+                }
+            }
+            
             
         }
     }

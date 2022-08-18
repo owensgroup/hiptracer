@@ -618,11 +618,11 @@ extern "C" {
             triple[desc.tripleSize] = '\0';
 
             if (desc.size > 0) {
-                /* Write the code object to a file
+                // Write the code object to a file
                 printf("[%d] writing code object for %s:\n", g_curr_event, triple.c_str());
                 std::FILE* code = std::fopen(CODE_OBJECT_FILENAME, "wb");
                 std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
-				std::fclose(code); */
+				std::fclose(code);
 
                 // Add code object directly to data list as its own chunk
                 //data_t code_object;
