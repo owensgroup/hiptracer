@@ -17,23 +17,24 @@ We provide the following CLI tools:
 
 # Usage & Project Architecture 
 ```mermaid
-classDiagram
+flowchart TD
+subgraph lib[Library Functions]
+cb[Callback Functions]
+subgraph other[Other Functions]
+captfunc[Capture Functions]
+repfunc[Replay Functions]
+binfunc[Binary Editing and Viewing Functions]
+end
+end
+subgraph tools[Our Tools]
+capture
+replay
+binedit
+binview
+end
 
-"Library Functions"
-"Library Functions" : "Callback Functions"
-"Library Functions" : "Other Functions"
-
-"Other Functions": "Capture Functions"
-"Other Functions": "Replay Functions"
-"Other Functions": "Binary Editing Functions"
-
-LibraryFunctions <|-- Tools
-
-Tools <|-- capture
-Tools <|-- replay
-Tools <|-- "binedit / binview"
-
-LibraryFunctions --|> "Your Editing Tool"
+lib --> tools
+lib --> your["your tool"]
 ```
 
 Besides these CLI tools, we also provide a set of functions that can be used to create your own profiling and binary editing tools.
