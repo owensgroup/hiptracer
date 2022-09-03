@@ -1,12 +1,40 @@
-# Usage & Overall Architecture
-(YYY) is a set of tools and library functions for capturing AMD GPU compute activity with HIP without access to underlying source code. (What is HIP? -> See: [XXX])
+(NAME) is a set of tools and library functions for capturing compute activity of AMD GPUs that use HIP.
 We provide simple implementations of common GPU profiling and instrumentation tasks, and _a set of library functions_ for _creating your own profiling and GPU binary editing tools_.
+We require *no access to the source code*, even stripped binaries will do.
 
-We provide the follwing tools:
+# Why would I want this?
+* You might want to examine the assembly code for your HIP application. 
+* You might like to see how your environment affected captured HIP activity and GPU binaries.
+* You want to capture GPU activity for later analysis (without the original executable)
+* You want to replay GPU activity from a description of the HIP calls and kernel launches
+* You might want to add instrumentation to GPU binaries by inserting instructions in the resulting assembly
+
+We provide the following CLI tools:
 * Capture HIP functions and kernel launches - `capture`
 * Replay captured HIP activity, allocations, copies, and kernel launches - `replay`
 * View and edit captured activity - `capview` 
 * View and edit GPU binary (assembly) code for captured activity - `binview`/`binedit`
+
+# Usage & Project Architecture 
+```mermaid
+classDiagram
+
+Library Functions
+Library Functions : Callback Functions
+Library Functions : Other Functions
+
+Other Functions : Capture Functions
+Other Functions : Replay Functions
+Other Functions : Binary Editing Functions
+
+LibraryFunctions <|-- Tools
+
+Tools <|-- capture
+Tools <|-- replay
+Tools <|-- binedit / binview
+
+LibraryFunctions --|> Your Editing Tool
+```
 
 Besides these CLI tools, we also provide a set of functions that can be used to create your own profiling and binary editing tools.
 To create your own tools, implement any of the core [callback functions](###Callback functions) and compile the resulting object with the `libhipcapture.a` library we provide. 
