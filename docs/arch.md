@@ -19,21 +19,21 @@ We provide the following CLI tools:
 ```mermaid
 classDiagram
 
-Library Functions
-Library Functions : Callback Functions
-Library Functions : Other Functions
+"Library Functions"
+"Library Functions" : "Callback Functions"
+"Library Functions" : "Other Functions"
 
-Other Functions : Capture Functions
-Other Functions : Replay Functions
-Other Functions : Binary Editing Functions
+"Other Functions": "Capture Functions"
+"Other Functions": "Replay Functions"
+"Other Functions": "Binary Editing Functions"
 
 LibraryFunctions <|-- Tools
 
 Tools <|-- capture
 Tools <|-- replay
-Tools <|-- binedit / binview
+Tools <|-- "binedit / binview"
 
-LibraryFunctions --|> Your Editing Tool
+LibraryFunctions --|> "Your Editing Tool"
 ```
 
 Besides these CLI tools, we also provide a set of functions that can be used to create your own profiling and binary editing tools.
