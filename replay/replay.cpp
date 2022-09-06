@@ -282,7 +282,7 @@ int main()
                 continue;
             }
             std::string off_str = l.substr(l.find(" "), l.size());
-            uint16_t offset = std::atoi(off_str.c_str()); 
+            int16_t offset = std::atoi(off_str.c_str()); 
             
             elfio reader;
             if (!reader.load("./gfx908.code")) {
@@ -302,25 +302,32 @@ int main()
                         std::vector<std::byte> code_buff(psec->get_size());
                         std::memcpy(code_buff.data(), psec->get_data(), psec->get_size());
                         
-                        uint16_t jump = (uint16_t) psec->get_size(); 
+                        int16_t jump = psec->get_size() - offset; 
                         uint32_t new_inst = 0xBF820000; // s_branch [offset]
                         uint32_t ret_inst = 0xBF820000; // s_branch [offset]
-                        new_inst |= jump / 4 - 1;
-                        ret_inst |= offset / 4;
+                        new_inst |= 3; // (jump / 4) - 1;
+                        int16_t ret_jump = -8; //(-jump / 4) - 1;
+                        ret_inst |= ((uint16_t)ret_jump);
                         
                         uint32_t old_inst = 0x0; // FIXME ~ Target instr could be 64 bits, ask llvm-mc
                         std::memcpy(&old_inst, &code_buff[offset], sizeof(old_inst));
                         std::memcpy(&code_buff[offset], &new_inst, sizeof(old_inst));
                         
                         // Instrument before old instructions
-                        std::string new_code = "\x00\x00\x80\xBF";
+                        //std::string new_code = "\x00\x00\x80\xBF\x00\x00\x00\x00";
                         //std::printf("new: %s\n", new_code.c_str());
                         //new_code.append((char*) &old_inst, sizeof(old_inst));
                         //new_code.append((char*) &ret_inst, sizeof(ret_inst));
                         
                         psec->set_data((const char*)code_buff.data(), code_buff.size());
-                        psec->append_data(new_code);
+                        //psec->append_data(new_code);
                         
+                        uint32_t new_code = 0x8004FF80;
+                        uint32_t new_code2 = 0x4048F5C3;
+                        uint32_t new_code3 = 0x7E0C0204;
+                        psec->append_data((char*) &new_code, sizeof(new_code));
+                        psec->append_data((char*) &new_code2, sizeof(new_code2));
+                        psec->append_data((char*) &new_code3, sizeof(new_code3));
                         psec->append_data((char*) &old_inst, sizeof(old_inst));
                         psec->append_data((char*) &ret_inst, sizeof(ret_inst));
                         

@@ -12,16 +12,11 @@ OBJECTS = $(SOURCES:.cpp=.o)
 
 EXECUTABLE=./vectoradd_hip.exe
 
-TRACER=../../hip/libhiptracer.so
-
 .PHONY: test
 
 CXXFLAGS=
 
 CXX=$(HIPCC)
-
-test: $(EXECUTABLE) $(TRACER)
-	LD_PRELOAD=$(TRACER) $(EXECUTABLE)
 
 $(EXECUTABLE): $(OBJECTS) 
 	$(HIPCC) -g -O0 $(OBJECTS) -o $@

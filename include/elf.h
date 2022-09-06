@@ -1,6 +1,6 @@
 #include "elfio/elfio.hpp"
 
-#include "llvm/BinaryFormat/MsgPackDocument.h"
+#include "msgpuck.h"
 
 #include <iostream>
 #include <cstdio>
@@ -46,32 +46,68 @@ std::vector<ArgInfo> getArgInfo(const char* fname)
                 Elf_Word descSize;
                 notes.get_note(i, type, name, desc, descSize);
 
-                std::string metadata_blob(reinterpret_cast<char *>(desc), descSize);
-                llvm::msgpack::Document doc;
-                doc.readFromBlob(metadata_blob, false);
+                const char* r = (const char*)desc;
+                uint32_t map_size = mp_decode_map(&r);
+                std::printf("Map Size: %d \n", map_size);
+                for (int i = 0; i < map_size; i++) {
+                    uint32_t key_len;
+                    const char* key = mp_decode_str(&r, &key_len);
+                    
+                    std::printf("Key Length: %d\n", key_len);
+                    std::printf("Key:%.*s\n", key_len, key);
+                    
+                    if (std::string(key, key_len) == "amdhsa.kernels") {
+                        uint32_t num_kernels = mp_decode_array(&r);
+                        for (int i = 0; i < num_kernels; i++) {
+                            uint32_t kern_map_size = mp_decode_map(&r);
 
-                auto args = doc.getRoot()
-                    .getMap(true)[doc.getNode("amdhsa.kernels")]
-                    .getArray(true)[0]
-                    .getMap(true)[doc.getNode(".args")]
-                    .getArray(true);
+                            for (int i = 0; i < kern_map_size; i++) {
+                                uint32_t kkey_len;
+                                const char* kern_key = mp_decode_str(&r, &kkey_len);
 
-                std::cout << "Arg size " << args.size() << std::endl; 
-                for (int i = 0; i < args.size(); i++) { 
-                    auto a = args[i].getMap(true);
-                    ArgInfo info;
-                    if (a[doc.getNode(".address_space")].isString()) {
-                        info.address_space = std::string(a[doc.getNode(".address_space")].getString().str());
-                    } if (a[doc.getNode(".size")].isScalar()) {
-                        info.size = a[doc.getNode(".size")].getUInt();
-                    } if (a[doc.getNode(".offset")].isScalar()) {
-                        info.offset = a[doc.getNode(".offset")].getUInt();
-                    } if (a[doc.getNode(".value_kind")].isString()) {
-                        info.value_kind = std::string(a[doc.getNode(".value_kind")].getString().str());
-                    } if (a[doc.getNode(".access")].isString()) {
-                        info.access = std::string(a[doc.getNode(".access")].getString().str());
+                                if (std::string(kern_key, kkey_len) == ".args") {
+                                    uint32_t num_args = mp_decode_array(&r);
+                                    for (int i = 0; i < num_args; i++) {
+                                        uint32_t arg_map_size = mp_decode_map(&r);
+                                        ArgInfo info;
+                                        for (int i = 0; i < arg_map_size; i++) {
+                                            uint32_t arg_len;
+                                            const char* arg_key = mp_decode_str(&r, &arg_len);
+                                            
+                                            if (std::string(arg_key, arg_len) == ".address_space") {
+                                                uint32_t addr_len;
+                                                const char* address_space = mp_decode_str(&r, &addr_len);
+                                                info.address_space = std::string(address_space, addr_len);
+                                            } else if (std::string(arg_key, arg_len) == ".size") {
+                                                info.size = mp_decode_uint(&r);
+                                            } else if (std::string(arg_key, arg_len) == ".offset") {
+                                                info.offset = mp_decode_uint(&r);
+                                            } else if (std::string(arg_key, arg_len) == ".value_kind") {
+                                                uint32_t valkind_len;
+                                                const char* value_kind = mp_decode_str(&r, &valkind_len);
+                                                if (valkind_len > 0)
+                                                    info.value_kind = std::string(value_kind, valkind_len);
+                                            } else if (std::string(arg_key, arg_len) == ".access") {
+                                                uint32_t access_len;
+                                                const char* access_str = mp_decode_str(&r, &access_len);
+                                                if (access_len > 0)
+                                                    info.access = std::string(access_str, access_len);
+                                            } else {
+                                                mp_next(&r);
+                                            }
+                                        }
+                                        arg_infos.push_back(info);
+                                    }
+                                    
+                                } else {
+                                    mp_next(&r); // Skip value
+                                }
+                            }
+                        }
                     }
-                    arg_infos.push_back(info);
+                    else {
+                        mp_next(&r);
+                    }
                 }
             }
         }
@@ -80,12 +116,12 @@ std::vector<ArgInfo> getArgInfo(const char* fname)
     for (int i = 0; i < arg_infos.size(); i++) {
         auto info = arg_infos[i];
         if (info.address_space.size() > 0)
-            std::cout << info.address_space << std::endl;
+            std::cout << "Address Space :: " << info.address_space << std::endl;
         if (info.access.size() > 0)
-            std::cout << info.access.size() << std::endl;
-        std::cout << info.size << std::endl;
-        std::cout << info.offset << std::endl;
-        std::cout << info.value_kind << std::endl;
+            std::cout << "ACCESS " << info.access.size() << std::endl;
+        std::cout << "Size" << info.size << std::endl;
+        std::cout << "Offset" << info.offset << std::endl;
+        std::cout << "Value Kind: " << info.value_kind << std::endl;
     }
 
     return arg_infos;

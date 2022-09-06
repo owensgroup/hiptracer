@@ -47,14 +47,6 @@ struct FUBAR {
     int height;
 };
 
-
-__device__ float*
-some_device(float* a)
-
-{
-    return a;
-}
-
 __global__ void 
 vectoradd_float(float* __restrict__ a, float* __restrict__ b, float* __restrict__ c, int width,
                 int height)

@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#include <zstd.h>
+
 // event_t, header_t, data_t
 #include "trace.h"
 // ArgInfo, getArgInfo
@@ -70,8 +72,17 @@ void write_event_list(std::FILE* fp)
 void write_data(std::FILE* fp)
 {
     for (int i = 0; i < g_data_list.size(); i++) {
-        std::printf("chunk %d of size %d\n", i, g_data_list[i].bytes.size());
-        std::fwrite(g_data_list[i].bytes.data(), sizeof(std::byte), g_data_list[i].bytes.size(), fp);
+        size_t size = g_data_list[i].bytes.size();
+        
+        std::printf("compressing chunk %d of size %d\n", i, size);
+        size_t cBuffSize = ZSTD_compressBound(size);
+        
+        std::vector<char> compressed;
+        compressed.reserve(cBuffSize);
+        size_t actualSize = ZSTD_compress(compressed.data(), cBuffSize, g_data_list[i].bytes.data(), size, 1);
+        
+        std::printf("writing compressed chunk %d of size %d \n", i, actualSize);
+        std::fwrite(compressed.data(), sizeof(char), actualSize, fp);
     }
 }
 
