@@ -1,13 +1,13 @@
-(NAME) is a set of tools and library functions for capturing compute activity of AMD GPUs that use HIP.
-We provide simple implementations of common GPU profiling and instrumentation tasks, and _a set of library functions_ for _creating your own profiling and GPU binary editing tools_.
-We require *no access to the source code*, even stripped binaries will do.
+hipBIT is a set of tools and library functions for capturing compute activity of AMD GPUs that use HIP.
+We provide simple implementations of common GPU profiling and instrumentation tasks, and a set of library functions for creating **your own** profiling and GPU binary editing tools.
+We require **no** access to the source code or debugging symbols.
 
 # Why would I want this?
 * You might want to examine the assembly code for your HIP application. 
-* You might like to see how your environment affected captured HIP activity and GPU binaries.
-* You want to capture GPU activity for later analysis (without the original executable)
-* You want to replay GPU activity from a description of the HIP calls and kernel launches
-* You might want to add instrumentation to GPU binaries by inserting instructions in the resulting assembly
+* You might like to see how your environment affected HIP activity and GPU binaries. (For some users, the GPU code they compile and launch depends on their  runtime enviroment)
+* You want to capture GPU activity for later analysis (without access to the original executable)
+* You want to replay GPU activity from a textual description of the HIP calls and kernel launches
+* You want to modify or add instrumentation to GPU binaries
 
 We provide the following CLI tools:
 * Capture HIP functions and kernel launches - `capture`
