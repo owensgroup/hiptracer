@@ -5,7 +5,7 @@
 
 - I'm basing each item off specific papers from conferences that did similar things (ex MICRO).
 
-## Paper Thesis
+## Paper Ideas
 We built a set of tools to obtain sequences of library calls and executed GPU binary code.
 We propose using these tools in the following interesting ways:
 
