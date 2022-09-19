@@ -23,7 +23,7 @@ We propose using these tools in the following interesting ways:
     - Related Works
     -- Memory Space Recycling (SIGMETRICS 2022) - https://dl.acm.org/doi/abs/10.1145/3508034
     
-    -- Speculative Code Compaction: Eliminating Dead Code via Speculative Microcode Transformations (Micro 2022) - (probably, can't find a PDF to read it, but sounds identical)
+    -- Speculative Code Compaction: Eliminating Dead Code via Speculative Microcode Transformations (Micro 2022) - (probably, can't find a PDF to read it, but "speculative microcode transformations" sounds identical)
     
 * We can use the binary traces to **translate** programs. - Suppose we wish to translate a binary from one architecture to another. There will be certain constructs in the resulting translated binary that are always "bad" on the target architecture. This may be due to some structure of the original program, or some feature that the target architecture lacks. But we can use our ability to capture binary traces to capture the "bad" sequences that have been generated. We can then translate these to more efficient structures on the target architecture. This could be used in a bunch of really cool ways:
    - Emulate a Compute API on a Graphics API -  HIP has very poor support outside the MIX00 cards. This would allow us to translate a program that contains HIP calls and binary code and execute it within a Vulkan or OpenGL runtime.
