@@ -1,9 +1,9 @@
 # Thesis Statement for Papers / QE
-- This is a thesis for papers and the QE. 
+- This is a thesis(es) for papers and the QE. 
 
-- I am taking what I built and trying to apply it to several problems that I think have research-value.
+- I am taking what I built and trying to apply it to several problems that I think have research-value. Each bullet is one potential paper idea, and at the end I have a "thesis statement" made from putting them together.
 
-- I'm basing each item off specific papers from conferences that did similar things (ex MICRO).
+- I'm basing each item off specific papers from conferences that did similar things (ex MICRO, SIGMETRICS).
 
 ## Paper Ideas
 We built a set of tools to obtain sequences of library calls and executed GPU binary code.
