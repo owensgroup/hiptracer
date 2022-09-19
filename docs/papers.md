@@ -1,7 +1,9 @@
 # Thesis Statement for Papers / QE
-This is a thesis for papers and the QE based on reading papers from the conferences that were recommended (MICRO, SIGMETRICS, ...)
-I am taking what I built and trying to apply it to several problems that I think have research-value.
-I'm basing each item off specific papers from conferences that did similar things, so I feel stuck trying to improve them. 
+- This is a thesis for papers and the QE. 
+
+- I am taking what I built and trying to apply it to several problems that I think have research-value.
+
+- I'm basing each item off specific papers from conferences that did similar things (ex MICRO).
 
 ## Paper Thesis
 We built a set of tools to obtain sequences of library calls and executed GPU binary code.
