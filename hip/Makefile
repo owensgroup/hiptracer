@@ -7,10 +7,10 @@ LIBS = -ldl -lzstd
 
 #Link step
 all: hiptracer.pic.o msgpuck.o hints.o
-	$(CC) -shared $(OBJS) -o $(OUT) $(LIBS) --no-undefined
+	$(CC) -shared -g $(OBJS) -o $(OUT) $(LIBS) --no-undefined
 
 hiptracer.pic.o: hip.cpp
-	$(CC) -o $@ $(INC) $(FLAGS) hip.cpp 
+	$(CC) -g -o $@ $(INC) $(FLAGS) hip.cpp 
 
 msgpuck.o: msgpuck.c
 	$(CC) -o $@ $(INC) $(FLAGS) msgpuck.c

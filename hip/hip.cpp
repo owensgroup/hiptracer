@@ -218,6 +218,7 @@ extern "C" {
     } my_hipMemcpyKind;
 
 	typedef void* my_hipFunction_t;
+    typedef void* my_hipModule_t;
 	
     void* rocmLibHandle = NULL;
 
@@ -228,6 +229,7 @@ extern "C" {
 
     my_hipError_t (*hipModuleLaunchKernel_fptr)(my_hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
                                                 unsigned int, my_hipStream_t, void**, void**) = NULL;
+    my_hipError_t (*hipModuleLoad_fptr)(my_hipModule_t*, const char*) = NULL;
     my_hipError_t (*hipFree_fptr)(void*) = NULL;
     my_hipError_t (*hipMalloc_fptr)(void**, size_t) = NULL;
     my_hipError_t (*hipMemcpy_fptr)(void*, const void*, size_t, my_hipMemcpyKind) = NULL;
@@ -452,10 +454,11 @@ extern "C" {
 
         std::vector<std::byte> arg_data(total_size);
 
+        std::printf("num arg infos %d\n", arg_infos.size());
         for(int i = 0; i < arg_infos.size(); i++) {
             std::printf("offset: %d\n", arg_infos[i].offset);
             std::printf("adding %d\n", arg_infos[i].size);
-			std::memcpy(arg_data.data() + arg_infos[i].offset, args[i], arg_infos[i].size);
+			std::memcpy(arg_data.data() + arg_infos[i].offset, args + arg_infos[i].offset, arg_infos[i].size);
 		}
 
         data_t name_chunk;
@@ -478,7 +481,17 @@ extern "C" {
         printf("OFFSET %d\n", g_curr_offset);
 
         data_t chunk;
-        chunk = as_bytes(function_address, numBlocks, dimBlocks, sharedMemBytes, stream, name_chunk.size, arg_chunk.size);
+        struct launch_data {
+            const void* function_address;
+            dim3 numBlocks;
+            dim3 dimBlocks;
+            unsigned int sharedMemBytes;
+            my_hipStream_t stream;
+            size_t name_size;
+            size_t arg_size;
+        };
+        launch_data ld = launch_data{function_address, numBlocks, dimBlocks, sharedMemBytes, stream, name_chunk.size, arg_chunk.size};
+        chunk = as_bytes(ld);
 
         e.size = chunk.bytes.size() + arg_chunk.bytes.size() + name_chunk.bytes.size();
 
@@ -563,6 +576,21 @@ extern "C" {
         return result;
 
     }
+ 
+    /*
+    my_hipError_t hipModuleLoad(my_hipModule_t *module, const char *fname)
+    { 
+        if (rocmLibHandle == NULL) {
+            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
+        }
+        if (hipRegisterFatBinary_fptr == NULL) {
+            hipModuleLoad_fptr = ( my_hipError_t (*) (my_hipModule_t*, const char*)) dlsym(rocmLibHandle, "hipModuleLoad");
+        }
+        printf("[%d] hooked: hipModuleLoad(%p, %s)\n", module, fname);
+
+        return hipModuleLoad_fptr(module, fname);
+    }
+    */
 
     void* __hipRegisterFatBinary(const void* data)
     {
@@ -654,10 +682,3 @@ extern "C" {
         return (*hipRegisterFatBinary_fptr)(data);
     }
 };
-
-int main() {
-    std::cout << "Running as executable" << std::endl;
-    std::cout << "Create dummy trace" << std::endl;
-
-    return 0;
-}
