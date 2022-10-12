@@ -1,6 +1,6 @@
-hipBIT is a set of tools and library functions for capturing compute activity of AMD GPUs that use HIP.
-We provide simple implementations of common GPU profiling and instrumentation tasks, and a set of library functions for creating **your own** profiling and GPU binary editing tools.
-We require **no** access to the source code or debugging symbols.
+hiptracer is a set of tools and library functions for capturing and instrumenting compute activity of AMD GPUs that use HIP.
+We provide implementations of common GPU profiling and instrumentation tasks, and a set of library functions for creating _your own_ profiling and GPU binary editing tools.
+We require **no** access to source code or debugging symbols.
 
 # Why would I want this?
 * You might want to examine the assembly code for your HIP application. 
@@ -57,8 +57,8 @@ You can also compile your callbacks separtely and provide them to our CLI `attac
 Besides the callback functions, we provide functions that can be used to implement a large variety of tracing, capture, and instrumentation tools for GPU compute programs.
 These functions include simple wrappers over the HIP activity API as well as more complex capture and editing functions.
 
-## Library Function Listing
-Below is a listing of all core functionality.
+## Library Function Listing (In Progress)
+Below is a listing of all core functionality. 
 
 ### Callback Functions
 When implemented and running with a PRELOADED `libhipcapture.a`, these functions will be executed as any HIP program executes. 
