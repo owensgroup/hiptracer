@@ -4,6 +4,7 @@
 #include <iostream>
 #include <cstring>
 #include <string>
+#include <sstream>
 #include <functional>
 
 #include <dlfcn.h>
@@ -18,7 +19,13 @@
 // ArgInfo, getArgInfo
 #include "elf.h"
 
-const char* g_prog_name = "./vectoradd"; //FIXME
+#include "subprocess.h"
+#include "callbacks.h"
+
+bool REWRITE = true;
+bool APICAPTURE = false;
+bool DEBUG = false;
+
 int g_curr_event = 0;
 
 typedef void* my_hipStream_t;
@@ -29,6 +36,132 @@ std::vector<data_t> g_data_list;
 uint64_t g_curr_offset = 0;
 
 #define CODE_OBJECT_FILENAME "gfx908.code"
+#define SUBPROCESS_BUFFER 4096
+
+void list_instrumentation_points(Inst* instructions, unsigned long instructions_len,
+                                 Rewrite** rewrites, unsigned long* rewrites_len) {
+    for (int i = 0; i < instructions_len; i++) {
+        Inst inst = instructions[i];
+
+        std::cout << "NAME: " << inst.inst_name << " OFFSET: " << inst.offset << " SIZE: " << inst.size << std::endl;
+    }
+}
+
+void modify_binary(Rewrite* rewrites, uint64_t rewrites_len) {
+    for (int i = 0; rewrites != NULL && i < rewrites_len; i++) {
+        uint64_t offset = rewrites[i].offset;
+        elfio reader;
+        if (!reader.load(CODE_OBJECT_FILENAME)) {
+            std::printf("Failed to load binary for rewrite\n");
+            return;
+        }
+
+        Elf_Half sec_num = reader.sections.size(); 
+        for (int i = 0; i < sec_num; i++) {
+            section* psec = reader.sections[i];
+    
+            if (psec) {                    
+                std::string sec_name = psec->get_name();
+                const std::string TEXT = ".text";
+                if(sec_name == TEXT) {
+                    std::printf("Found .text\n");                               
+                    std::vector<std::byte> code_buff(psec->get_size());
+                    std::memcpy(code_buff.data(), psec->get_data(), psec->get_size());
+                
+                    int16_t jump = psec->get_size() - offset; 
+                    uint32_t new_inst = 0xBF820000; // s_branch [offset]
+                    uint32_t ret_inst = 0xBF820000; // s_branch [offset]
+                    new_inst |= 3; // (jump / 4) - 1;
+                    int16_t ret_jump = -8; //(-jump / 4) - 1;
+                    ret_inst |= ((uint16_t)ret_jump);
+                
+                    uint32_t old_inst = 0x0; // FIXME ~ Target instr could be 64 bits, ask llvm-mc
+                    std::memcpy(&old_inst, &code_buff[offset], sizeof(old_inst));
+                    std::memcpy(&code_buff[offset], &new_inst, sizeof(old_inst));
+                
+                    psec->set_data((const char*)code_buff.data(), code_buff.size());
+                
+                    uint32_t new_code = 0x8004FF80;
+                    uint32_t new_code2 = 0x4048F5C3;
+                    uint32_t new_code3 = 0x7E0C0204;
+                    psec->append_data((char*) &new_code, sizeof(new_code));
+                    psec->append_data((char*) &new_code2, sizeof(new_code2));
+                    psec->append_data((char*) &new_code3, sizeof(new_code3));
+                    psec->append_data((char*) &old_inst, sizeof(old_inst));
+                    psec->append_data((char*) &ret_inst, sizeof(ret_inst));
+                
+                    reader.save(CODE_OBJECT_FILENAME);
+                }
+            }
+        }
+    }
+}
+
+std::vector<Inst> g_instruction_data;
+uint64_t get_num_instructions() {
+    std::string command = std::string("/opt/rocm/llvm/bin/llvm-objdump -d --section=.text ") + std::string(CODE_OBJECT_FILENAME);
+    //std::cout << command << std::endl;
+
+    std::FILE* fp_output = NULL;
+    fp_output = popen(command.c_str(), "r");
+    if (fp_output == NULL) {
+        std::printf("Run failed\n");
+        return 0;
+    }
+    
+    char output[SUBPROCESS_BUFFER];
+    uint64_t num_instructions = 0;
+    while(std::fread(output, 1, SUBPROCESS_BUFFER, fp_output) > 0) { 
+        std::istringstream ss(std::string(output, SUBPROCESS_BUFFER));
+
+        std::string line;
+        while(std::getline(ss, line)) {
+            if(line[0] == '\t') {
+                num_instructions++;
+
+                std::string name;
+                std::string word;
+                std::stringstream words(line);
+                Inst inst;
+                words >> name;
+                while(words >> word) {
+                    if (word == "//") {
+                        std::string offset;
+                        words >> offset;
+
+                        std::string op_lower;
+                        std::string op_higher;
+
+                        words >> op_lower;
+                        words >> op_higher;
+
+                        if(op_higher == "") {
+                            inst.size = Inst::SIZE32;
+                        } else if(name[0] == 'g') {
+                            inst.size = Inst::SIZE128;
+                        } else {
+                            inst.size = Inst::SIZE64;
+                        }
+
+                        if (op_lower.size() > 0 && name.size() > 0) { 
+                            inst.inst_name = name;
+                            inst.offset = std::stoi(offset, 0, 16);
+                            
+                            g_instruction_data.push_back(inst);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    return g_instruction_data.size();
+}
+
+Inst* get_instruction_data() {
+
+    return g_instruction_data.data();
+}
 
 template<typename T>
 data_t as_bytes(T a)
@@ -217,9 +350,9 @@ extern "C" {
         hipMemcpyDefault = 4
     } my_hipMemcpyKind;
 
-	typedef void* my_hipFunction_t;
+    typedef void* my_hipFunction_t;
     typedef void* my_hipModule_t;
-	
+    
     void* rocmLibHandle = NULL;
 
     my_hipError_t (*hipGetDeviceProperties_fptr)(my_hipDeviceProp_t*,int) = NULL;
@@ -235,7 +368,7 @@ extern "C" {
     my_hipError_t (*hipMemcpy_fptr)(void*, const void*, size_t, my_hipMemcpyKind) = NULL;
 
     const char* (*hipKernelNameRefByPtr_fptr)(const void*, my_hipStream_t) = NULL;
-	const char* (*hipKernelNameRef_fptr)(const my_hipFunction_t) = NULL;
+    const char* (*hipKernelNameRef_fptr)(const my_hipFunction_t) = NULL;
 
     my_hipError_t hipFree(void *p)
     {
@@ -248,9 +381,11 @@ extern "C" {
             hipFree_fptr = (my_hipError_t (*) (void*)) dlsym(rocmLibHandle, "hipFree");
         }
 
-        printf("[%d] hooked: hipFree\n", g_curr_event);
-        printf("[%d] \t p: %p\n", g_curr_event, p);
-        printf("[%d] calling: hipFree\n", g_curr_event); 
+        if (DEBUG) {
+            printf("[%d] hooked: hipFree\n", g_curr_event);
+            printf("[%d] \t p: %p\n", g_curr_event, p);
+            printf("[%d] calling: hipFree\n", g_curr_event); 
+        }
 
         event_t e;
         e.id = g_curr_event;
@@ -258,19 +393,23 @@ extern "C" {
         e.type = EVENT_FREE;
         e.offset = g_curr_offset;
 
-        data_t chunk;
-        chunk = as_bytes(p);
+        if (APICAPTURE) {
+            data_t chunk;
+            chunk = as_bytes(p);
 
-        e.size = chunk.bytes.size();
+            e.size = chunk.bytes.size();
 
-        g_event_list.push_back(e);
-        g_data_list.push_back(chunk);
+            g_event_list.push_back(e);
+            g_data_list.push_back(chunk);
 
-        g_curr_offset += chunk.size;
+            g_curr_offset += chunk.size;
+        }
 
         my_hipError_t result = (*hipFree_fptr)(p);
 
-        printf("[%d] \t result: %d\n", g_curr_event, result);
+        if (DEBUG) {
+            printf("[%d] \t result: %d\n", g_curr_event, result);
+        }
         return result;
  
     }
@@ -287,15 +426,19 @@ extern "C" {
         }
 
 
-        printf("[%d] hooked: hipMalloc\n", g_curr_event);
-        printf("[%d] calling: hipMalloc\n", g_curr_event); 
+        if (DEBUG) {
+            printf("[%d] hooked: hipMalloc\n", g_curr_event);
+            printf("[%d] calling: hipMalloc\n", g_curr_event); 
+        }
         my_hipError_t result = (*hipMalloc_fptr)(p, size);
 
 
-        printf("[%d] \t result: %d\n", g_curr_event, result);
-        printf("[%d] hooked: hipMalloc\n", g_curr_event);
-        printf("[%d] \t returned ptr: %p\n", g_curr_event, *p);
-        printf("[%d] \t size: %lu\n", g_curr_event, size);
+        if (DEBUG) {
+            printf("[%d] \t result: %d\n", g_curr_event, result);
+            printf("[%d] hooked: hipMalloc\n", g_curr_event);
+            printf("[%d] \t returned ptr: %p\n", g_curr_event, *p);
+            printf("[%d] \t size: %lu\n", g_curr_event, size);
+        }
 
         event_t e;
         e.id = g_curr_event;
@@ -303,15 +446,17 @@ extern "C" {
         e.type = EVENT_MALLOC;
         e.offset = g_curr_offset;
 
-        data_t chunk;
-        chunk = as_bytes(*p, size);
+        if (APICAPTURE) {
+            data_t chunk;
+            chunk = as_bytes(*p, size);
 
-        e.size = chunk.bytes.size();
+            e.size = chunk.bytes.size();
 
-        g_event_list.push_back(e);
-        g_data_list.push_back(chunk);
+            g_event_list.push_back(e);
+            g_data_list.push_back(chunk);
 
-        g_curr_offset += chunk.size;
+            g_curr_offset += chunk.size;
+        }
 
         return result; 
     }
@@ -327,12 +472,14 @@ extern "C" {
             hipMemcpy_fptr = (my_hipError_t (*) (void*, const void*, size_t, my_hipMemcpyKind)) dlsym(rocmLibHandle, "hipMemcpy");
         }
 
-        printf("[%d] hooked: hipMemcpy\n", g_curr_event);
-        printf("[%d] \t dst: %p\n", g_curr_event, dst);
-        printf("[%d] \t src: %p\n", g_curr_event, src);
-        printf("[%d] \t size: %lu\n", g_curr_event, size);
-        printf("[%d] \t kind: %d\n", g_curr_event, (int) kind); // FIXME, gen enum strings
-        printf("[%d] calling: hipMempcy\n", g_curr_event); 
+        if (DEBUG) {
+            printf("[%d] hooked: hipMemcpy\n", g_curr_event);
+            printf("[%d] \t dst: %p\n", g_curr_event, dst);
+            printf("[%d] \t src: %p\n", g_curr_event, src);
+            printf("[%d] \t size: %lu\n", g_curr_event, size);
+            printf("[%d] \t kind: %d\n", g_curr_event, (int) kind); // FIXME, gen enum strings
+            printf("[%d] calling: hipMempcy\n", g_curr_event); 
+        }
 
         event_t e;
         e.id = g_curr_event;
@@ -340,27 +487,31 @@ extern "C" {
         e.type = EVENT_MEMCPY;
         e.offset = g_curr_offset;
 
-        data_t chunk;
-        chunk = as_bytes(dst, src, size, kind);
+        if (APICAPTURE) {
+            data_t chunk;
+            chunk = as_bytes(dst, src, size, kind);
 
-        e.size = chunk.bytes.size();
+            e.size = chunk.bytes.size();
 
-        g_event_list.push_back(e);
-        g_data_list.push_back(chunk);
+            g_event_list.push_back(e);
+            g_data_list.push_back(chunk);
 
-        g_curr_offset += chunk.size;
+            g_curr_offset += chunk.size;
 
-        data_t src_bytes;
-        src_bytes.bytes.resize(size);
-        std::memcpy(src_bytes.bytes.data(), src, size);
-        src_bytes.size = size;
+            data_t src_bytes;
+            src_bytes.bytes.resize(size);
+            std::memcpy(src_bytes.bytes.data(), src, size);
+            src_bytes.size = size;
 
-        g_data_list.push_back(src_bytes);
-        g_curr_offset += src_bytes.size;
+            g_data_list.push_back(src_bytes);
+            g_curr_offset += src_bytes.size;
 
+        }
         my_hipError_t result = (*hipMemcpy_fptr)(dst, src, size, kind);
 
-        printf("[%d] \t result: %d\n", g_curr_event, result);
+        if (DEBUG) {
+            printf("[%d] \t result: %d\n", g_curr_event, result);
+        }
         return result;
 
         
@@ -377,10 +528,12 @@ extern "C" {
             hipGetDeviceProperties_fptr = (my_hipError_t (*) (my_hipDeviceProp_t*, int)) dlsym(rocmLibHandle, "hipGetDeviceProperties");
         }
 
-        printf("[%d] hooked: hipGetDeviceProperties\n", g_curr_event);
-        printf("[%d] \t p_prop: %p\n", g_curr_event, p_prop);
-        printf("[%d]\t device: %d\n", g_curr_event, device);
-        printf("[%d] calling: hipGetDeviceProperties\n", g_curr_event); 
+        if (DEBUG) {
+            printf("[%d] hooked: hipGetDeviceProperties\n", g_curr_event);
+            printf("[%d] \t p_prop: %p\n", g_curr_event, p_prop);
+            printf("[%d]\t device: %d\n", g_curr_event, device);
+            printf("[%d] calling: hipGetDeviceProperties\n", g_curr_event); 
+        }
 
         event_t e;
         e.id = g_curr_event;
@@ -388,15 +541,17 @@ extern "C" {
         e.type = EVENT_DEVICE;
         e.offset = g_curr_offset;
 
-        data_t chunk;
-        chunk = as_bytes(p_prop, device);
+        if (APICAPTURE) {
+            data_t chunk;
+            chunk = as_bytes(p_prop, device);
 
-        e.size = chunk.bytes.size();
+            e.size = chunk.bytes.size();
 
-        g_event_list.push_back(e);
-        g_data_list.push_back(chunk);
+            g_event_list.push_back(e);
+            g_data_list.push_back(chunk);
 
-        g_curr_offset += chunk.size;
+            g_curr_offset += chunk.size;
+        }
 
         my_hipError_t result = (*hipGetDeviceProperties_fptr)(p_prop, device);
 
@@ -414,8 +569,6 @@ extern "C" {
         if (hipSetupArgument_fptr == NULL) {
             hipSetupArgument_fptr = ( my_hipError_t (*) (const void*, size_t size, size_t offset)) dlsym(rocmLibHandle, "hipSetupArgument");
         } 
-
-        std::printf("Calling setupargument \n");
 
         return (hipSetupArgument_fptr)(arg, size, offset);
     }
@@ -441,79 +594,97 @@ extern "C" {
         }
 
         std::string kernel_name((*hipKernelNameRefByPtr_fptr)(function_address, stream));
-		
-		std::vector<ArgInfo> arg_infos = getArgInfo(CODE_OBJECT_FILENAME);
-
-		std::printf("ARG INFO SIZE %d\n", arg_infos.size());	
-		
+        
+        std::vector<ArgInfo> arg_infos = getArgInfo(CODE_OBJECT_FILENAME);
+        
         size_t total_size = 0;
         if (arg_infos.size() > 0) {
             total_size = arg_infos[arg_infos.size() - 1].offset + arg_infos[arg_infos.size() - 1].size;
         }
-        std::printf("total size %d\n", total_size);
 
         std::vector<std::byte> arg_data(total_size);
 
-        std::printf("num arg infos %d\n", arg_infos.size());
+        //std::printf("num arg infos %d\n", arg_infos.size());
         for(int i = 0; i < arg_infos.size(); i++) {
-            std::printf("offset: %d\n", arg_infos[i].offset);
-            std::printf("adding %d\n", arg_infos[i].size);
-			std::memcpy(arg_data.data() + arg_infos[i].offset, args + arg_infos[i].offset, arg_infos[i].size);
-		}
-
-        data_t name_chunk;
-        name_chunk.bytes.resize(kernel_name.size());
-        name_chunk.size = kernel_name.size();
-        std::memcpy(name_chunk.bytes.data(), kernel_name.data(), name_chunk.size);
-
-        data_t arg_chunk;
-        arg_chunk.size = arg_data.size();
-        arg_chunk.bytes = arg_data;
-		
-		std::printf("arg chunk size %d\n", arg_chunk.size);
- 
+            //std::printf("offset: %d\n", arg_infos[i].offset);
+            //std::printf("adding %d\n", arg_infos[i].size);
+            std::memcpy(arg_data.data() + arg_infos[i].offset, args + arg_infos[i].offset, arg_infos[i].size);
+        }
+        
         event_t e;
         e.id = g_curr_event;
         e.name = __func__;
         e.type = EVENT_LAUNCH;
         e.offset = g_curr_offset;
 
-        printf("OFFSET %d\n", g_curr_offset);
+        if (APICAPTURE) {
+            data_t name_chunk;
+            name_chunk.bytes.resize(kernel_name.size());
+            name_chunk.size = kernel_name.size();
+            std::memcpy(name_chunk.bytes.data(), kernel_name.data(), name_chunk.size);
 
-        data_t chunk;
-        struct launch_data {
-            const void* function_address;
-            dim3 numBlocks;
-            dim3 dimBlocks;
-            unsigned int sharedMemBytes;
-            my_hipStream_t stream;
-            size_t name_size;
-            size_t arg_size;
-        };
-        launch_data ld = launch_data{function_address, numBlocks, dimBlocks, sharedMemBytes, stream, name_chunk.size, arg_chunk.size};
-        chunk = as_bytes(ld);
+            data_t arg_chunk;
+            arg_chunk.size = arg_data.size();
+            arg_chunk.bytes = arg_data;
+        //std::printf("arg chunk size %d\n", arg_chunk.size);
+        //printf("OFFSET %d\n", g_curr_offset);
+            data_t chunk;
+            struct launch_data {
+                const void* function_address;
+                dim3 numBlocks;
+                dim3 dimBlocks;
+                unsigned int sharedMemBytes;
+                my_hipStream_t stream;
+                size_t name_size;
+                size_t arg_size;
+            };
+            launch_data ld = launch_data{function_address, numBlocks, dimBlocks, sharedMemBytes, stream, name_chunk.size, arg_chunk.size};
+            chunk = as_bytes(ld);
 
-        e.size = chunk.bytes.size() + arg_chunk.bytes.size() + name_chunk.bytes.size();
+            e.size = chunk.bytes.size() + arg_chunk.bytes.size() + name_chunk.bytes.size();
 
-        g_event_list.push_back(e);
-        g_data_list.push_back(chunk);
-        g_data_list.push_back(name_chunk);
-        g_data_list.push_back(arg_chunk);
+            g_event_list.push_back(e);
+            g_data_list.push_back(chunk);
+            g_data_list.push_back(name_chunk);
+            g_data_list.push_back(arg_chunk);
 
-        g_curr_offset += e.size; 
+            g_curr_offset += e.size; 
+        }
 
-        printf("[%d] hooked: hipLaunchKernel\n", g_curr_event);
-        printf("[%d] \t kernel_name: %s\n", g_curr_event, kernel_name.c_str());
-        printf("[%d] \t function_address: %lx\n", g_curr_event, (uint64_t) function_address);
-        printf("[%d] \t numBlocks: %d %d %d\n", g_curr_event, numBlocks.x, numBlocks.y, numBlocks.z);
-        printf("[%d] \t dimBlocks: %d %d %d\n", g_curr_event, dimBlocks.x, dimBlocks.y, dimBlocks.z);
-        printf("[%d] \t sharedMemBytes: %lu\n", g_curr_event, sharedMemBytes);
-        printf("[%d] \t stream: %p\n", g_curr_event, stream); 
-        printf("[%d] calling: hipLaunchKernel\n", g_curr_event);
+        if (DEBUG) {
+            printf("[%d] hooked: hipLaunchKernel\n", g_curr_event);
+            printf("[%d] \t kernel_name: %s\n", g_curr_event, kernel_name.c_str());
+            printf("[%d] \t function_address: %lx\n", g_curr_event, (uint64_t) function_address);
+            printf("[%d] \t numBlocks: %d %d %d\n", g_curr_event, numBlocks.x, numBlocks.y, numBlocks.z);
+            printf("[%d] \t dimBlocks: %d %d %d\n", g_curr_event, dimBlocks.x, dimBlocks.y, dimBlocks.z);
+            printf("[%d] \t sharedMemBytes: %lu\n", g_curr_event, sharedMemBytes);
+            printf("[%d] \t stream: %p\n", g_curr_event, stream); 
+            printf("[%d] calling: hipLaunchKernel\n", g_curr_event);
+        }
 
+        if (REWRITE) {
+            uint64_t instructions_len = 0;
+            Inst* instructions = nullptr;
+
+            if (g_instruction_data.size() == 0) {
+                instructions_len = get_num_instructions();
+                instructions = get_instruction_data();
+            } else {
+                instructions_len = g_instruction_data.size();
+                instructions = g_instruction_data.data();
+            }
+            
+            std::printf("NUM INSTRS: %d\n", instructions_len);
+            
+            Rewrite** rewrites = NULL;
+            uint64_t rewrites_len = 0;
+            list_instrumentation_points(instructions, instructions_len, rewrites, &rewrites_len);
+            
+            //if (rewrites != NULL)
+                //modify_binary(*rewrites, rewrites_len);
+        }   
+ 
         my_hipError_t result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
-
-        printf("[%d] \t result: %d\n", g_curr_event, result);
 
         return result;
     }
@@ -538,14 +709,14 @@ extern "C" {
         if (hipModuleLaunchKernel_fptr == NULL) {
             hipModuleLaunchKernel_fptr = ( my_hipError_t (*) (my_hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, my_hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
         }
-		
+        
         if (hipKernelNameRef_fptr == NULL) {
             hipKernelNameRef_fptr = ( const char* (*) (const my_hipFunction_t)) dlsym(rocmLibHandle, "hipKernelNameRef");
         }
 
         std::string kernel_name((*hipKernelNameRef_fptr)(f));
-		
-		printf("kernel name %s\n", kernel_name.c_str());
+        
+        printf("kernel name %s\n", kernel_name.c_str());
 
         // data_t chunk;
 //         chunk = as_bytes(function_address, numBlocks, dimBlocks, sharedMemBytes, stream, name_chunk.size, arg_chunk.size);
@@ -576,21 +747,6 @@ extern "C" {
         return result;
 
     }
- 
-    /*
-    my_hipError_t hipModuleLoad(my_hipModule_t *module, const char *fname)
-    { 
-        if (rocmLibHandle == NULL) {
-            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
-        }
-        if (hipRegisterFatBinary_fptr == NULL) {
-            hipModuleLoad_fptr = ( my_hipError_t (*) (my_hipModule_t*, const char*)) dlsym(rocmLibHandle, "hipModuleLoad");
-        }
-        printf("[%d] hooked: hipModuleLoad(%p, %s)\n", module, fname);
-
-        return hipModuleLoad_fptr(module, fname);
-    }
-    */
 
     void* __hipRegisterFatBinary(const void* data)
     {
@@ -600,12 +756,7 @@ extern "C" {
         if (hipRegisterFatBinary_fptr == NULL) {
             hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(rocmLibHandle, "__hipRegisterFatBinary");
         }
-        printf("[%d] hooked: __hipRegisterFatBinary(%p)\n", g_curr_event, data);
-
-        /*
-        printf("Printing %p\n", data);
-        printf("__CudaFatBinaryWrapper struct\n");
-        */
+        //printf("[%d] hooked: __hipRegisterFatBinary(%p)\n", g_curr_event, data);
 
         const std::byte* wrapper_bytes = reinterpret_cast<const std::byte*>(data);
         struct fb_wrapper_t {
@@ -645,11 +796,9 @@ extern "C" {
 
             // Determine chunk size 
             size_t chunk_size = sizeof(desc) + desc.tripleSize;
-            std::vector<std::byte> bytes(chunk_size);	
+            std::vector<std::byte> bytes(chunk_size);   
 
             std::memcpy(bytes.data(), next, chunk_size);
-
-            //std::fwrite(bytes.data(), sizeof(std::byte), bytes.size(), fp);
 
             std::string triple;
             triple.reserve(desc.tripleSize + 1);
@@ -661,24 +810,14 @@ extern "C" {
                 printf("[%d] writing code object for %s:\n", g_curr_event, triple.c_str());
                 std::FILE* code = std::fopen(CODE_OBJECT_FILENAME, "wb");
                 std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
-				std::fclose(code);
-
-                // Add code object directly to data list as its own chunk
-                //data_t code_object;
-                //code_object.size = desc.size;
-                //code_object.bytes.reserve(desc.size);
-
-                //std::memcpy(code_object.bytes.data(), bin_bytes + desc.offset, desc.size);
-
-                //g_data_list.push_back(code_object);
-                //hdr.code_offset = g_curr_offset;
-                //hdr.code_size = code_object.size;
-                //g_curr_offset += code_object.size;
+                std::fclose(code);
             }
             next += chunk_size;
         }
 
-        std::atexit(flush_files);
+        if (APICAPTURE) {
+            std::atexit(flush_files);
+        }
         return (*hipRegisterFatBinary_fptr)(data);
     }
 };

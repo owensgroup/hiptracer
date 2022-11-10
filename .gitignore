@@ -41,3 +41,11 @@
 *.su
 *.idb
 *.pdb
+
+examples/
+*.data
+*.events
+dummy.tr
+cuda/
+ui/
+*.code

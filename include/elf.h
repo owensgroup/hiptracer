@@ -22,23 +22,23 @@ std::vector<ArgInfo> getArgInfo(const char* fname)
     elfio reader;
 	
     if (!reader.load(fname) ) {
-        std::cout << "Unable to find elf file" << std::endl;
+        //std::cout << "Unable to find elf file" << std::endl;
     } else {
-    	std::cout << "Found ELF file " << fname << std::endl;
+    	//std::cout << "Found ELF file " << fname << std::endl;
     }
 
     // Print ELF file sections info
     Elf_Half sec_num = reader.sections.size(); 
-	std::cout <<" Sections " << sec_num << std::endl;
+	//std::cout <<" Sections " << sec_num << std::endl;
 
     std::vector<ArgInfo> arg_infos;
     for ( int i = 0; i < sec_num; ++i ) {
         section* psec = reader.sections[i];
-		std::printf("TYPE %d SHT_NOTE == %d\n", psec->get_type(), SHT_NOTE);
+		//std::printf("TYPE %d SHT_NOTE == %d\n", psec->get_type(), SHT_NOTE);
         if (psec->get_type() == SHT_NOTE) {
             note_section_accessor notes(reader, psec);
 
-            std::printf("Num notes: %d\n", notes.get_notes_num());
+            //std::printf("Num notes: %d\n", notes.get_notes_num());
             for (int i = 0; i < notes.get_notes_num(); i++) {
                 Elf_Word type;
                 std::string name;
@@ -48,13 +48,13 @@ std::vector<ArgInfo> getArgInfo(const char* fname)
 
                 const char* r = (const char*)desc;
                 uint32_t map_size = mp_decode_map(&r);
-                std::printf("Map Size: %d \n", map_size);
+                //std::printf("Map Size: %d \n", map_size);
                 for (int i = 0; i < map_size; i++) {
                     uint32_t key_len;
                     const char* key = mp_decode_str(&r, &key_len);
                     
-                    std::printf("Key Length: %d\n", key_len);
-                    std::printf("Key:%.*s\n", key_len, key);
+                    //std::printf("Key Length: %d\n", key_len);
+                    //std::printf("Key:%.*s\n", key_len, key);
                     
                     if (std::string(key, key_len) == "amdhsa.kernels") {
                         uint32_t num_kernels = mp_decode_array(&r);
@@ -113,6 +113,7 @@ std::vector<ArgInfo> getArgInfo(const char* fname)
         }
     } 
 
+    /*
     for (int i = 0; i < arg_infos.size(); i++) {
         auto info = arg_infos[i];
         if (info.address_space.size() > 0)
@@ -123,6 +124,7 @@ std::vector<ArgInfo> getArgInfo(const char* fname)
         std::cout << "Offset" << info.offset << std::endl;
         std::cout << "Value Kind: " << info.value_kind << std::endl;
     }
+    */
 
     return arg_infos;
 }
