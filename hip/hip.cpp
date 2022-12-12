@@ -36,6 +36,7 @@ std::vector<data_t> g_data_list;
 uint64_t g_curr_offset = 0;
 
 #define CODE_OBJECT_FILENAME "gfx908.code"
+#define REWRITE_FILENAME "memtrace-gfx908.code"
 #define SUBPROCESS_BUFFER 4096
 
 void list_instrumentation_points(Inst* instructions, unsigned long instructions_len,
@@ -47,9 +48,9 @@ void list_instrumentation_points(Inst* instructions, unsigned long instructions_
     }
 }
 
-void modify_binary(Rewrite* rewrites, uint64_t rewrites_len) {
-    for (int i = 0; rewrites != NULL && i < rewrites_len; i++) {
-        uint64_t offset = rewrites[i].offset;
+uint64_t* g_memtrace_buffer = 0x0;
+uint64_t* g_memtrace_offset = 0x0;
+void modify_binary(std::vector<Rewrite>& rewrites) {
         elfio reader;
         if (!reader.load(CODE_OBJECT_FILENAME)) {
             std::printf("Failed to load binary for rewrite\n");
@@ -63,38 +64,58 @@ void modify_binary(Rewrite* rewrites, uint64_t rewrites_len) {
             if (psec) {                    
                 std::string sec_name = psec->get_name();
                 const std::string TEXT = ".text";
+                const std::string NOTES = ".notes";
                 if(sec_name == TEXT) {
                     std::printf("Found .text\n");                               
                     std::vector<std::byte> code_buff(psec->get_size());
                     std::memcpy(code_buff.data(), psec->get_data(), psec->get_size());
+
+                    uint64_t offset = (uint64_t) g_memtrace_offset;
+                    uint64_t buffer = (uint64_t) g_memtrace_buffer;
+
+                    uint32_t offset_lower = (uint32_t) offset; 
+                    uint32_t offset_higher = (uint32_t) (offset >> 32);
+                    uint32_t address_lower = ((uint32_t) buffer) & 0xFFFFF000;
+                    uint32_t address_higher = (uint32_t) (buffer >> 32);
+                    uint32_t address_last = ((uint32_t)buffer) & 0x00000FFF;
+
+                    for (int i = 0; i < rewrites.size(); i++) {
+                        uint64_t offset = rewrites[i].offset;
                 
-                    int16_t jump = psec->get_size() - offset; 
-                    uint32_t new_inst = 0xBF820000; // s_branch [offset]
-                    uint32_t ret_inst = 0xBF820000; // s_branch [offset]
-                    new_inst |= 3; // (jump / 4) - 1;
-                    int16_t ret_jump = -8; //(-jump / 4) - 1;
-                    ret_inst |= ((uint16_t)ret_jump);
+                        std::printf("Start: %xd JumpTO: %d\n", offset, psec->get_size());
+                        int16_t jump = 0x10F0 - offset - 4; // FIXME
+
+                        uint32_t new_inst = 0xBF820000; // s_branch [offset]
+                        uint32_t ret_inst = 0xBF820000; // s_branch [offset]
+                        new_inst |= 2;
+
+                        uint32_t nop_inst = 0xBF800000;
                 
-                    uint32_t old_inst = 0x0; // FIXME ~ Target instr could be 64 bits, ask llvm-mc
-                    std::memcpy(&old_inst, &code_buff[offset], sizeof(old_inst));
-                    std::memcpy(&code_buff[offset], &new_inst, sizeof(old_inst));
+                        uint64_t old_inst; // FIXME ~ Target instr could be 64 bits, ask llvm-mc
+                        std::memcpy(&old_inst, &code_buff[offset], sizeof(old_inst));
+                        std::memcpy(&code_buff[offset], &new_inst, sizeof(new_inst));
+                        std::memcpy(&code_buff[offset + sizeof(uint32_t)], &nop_inst, sizeof(nop_inst));
                 
-                    psec->set_data((const char*)code_buff.data(), code_buff.size());
+                        psec->set_data((const char*)code_buff.data(), code_buff.size());
                 
-                    uint32_t new_code = 0x8004FF80;
-                    uint32_t new_code2 = 0x4048F5C3;
-                    uint32_t new_code3 = 0x7E0C0204;
-                    psec->append_data((char*) &new_code, sizeof(new_code));
-                    psec->append_data((char*) &new_code2, sizeof(new_code2));
-                    psec->append_data((char*) &new_code3, sizeof(new_code3));
-                    psec->append_data((char*) &old_inst, sizeof(old_inst));
-                    psec->append_data((char*) &ret_inst, sizeof(ret_inst));
-                
-                    reader.save(CODE_OBJECT_FILENAME);
+                        uint32_t new_code[17] = { 0x7E140281, 0x7E1002FF, offset_higher, 0x7E160280,
+                                                  0x7E1202FF, 
+                                                  offset_lower,
+                                                  0xDD890000, 0x0A000A08, 0xBF8C0070, 0x7E1402FF, address_higher, 0x7E1602FF,
+                                                  address_lower, (0xDC740 << 12) | (address_last), 0x0000000A, (uint32_t) old_inst,
+                                                  (uint32_t) (old_inst >> 32)};
+
+
+                        int16_t ret_jump = -20;
+                        ret_inst |= ((uint16_t)ret_jump);
+
+                        psec->append_data((char*) &new_code, sizeof(new_code));
+                        psec->append_data((char*) &ret_inst, sizeof(ret_inst));
+                    }
                 }
             }
         }
-    }
+    reader.save(REWRITE_FILENAME);
 }
 
 std::vector<Inst> g_instruction_data;
@@ -111,6 +132,7 @@ uint64_t get_num_instructions() {
     
     char output[SUBPROCESS_BUFFER];
     uint64_t num_instructions = 0;
+    uint64_t base = 0;
     while(std::fread(output, 1, SUBPROCESS_BUFFER, fp_output) > 0) { 
         std::istringstream ss(std::string(output, SUBPROCESS_BUFFER));
 
@@ -124,6 +146,7 @@ uint64_t get_num_instructions() {
                 std::stringstream words(line);
                 Inst inst;
                 words >> name;
+
                 while(words >> word) {
                     if (word == "//") {
                         std::string offset;
@@ -146,6 +169,10 @@ uint64_t get_num_instructions() {
                         if (op_lower.size() > 0 && name.size() > 0) { 
                             inst.inst_name = name;
                             inst.offset = std::stoi(offset, 0, 16);
+                            if (base == 0) {
+                                base = inst.offset;
+                            } 
+                            inst.offset -= base;
                             
                             g_instruction_data.push_back(inst);
                         }
@@ -262,6 +289,10 @@ extern "C" {
        } __CudaFatBinaryWrapper;
      */
 
+#define HIP_LAUNCH_PARAM_BUFFER_POINTER ((void*)0x01)
+#define HIP_LAUNCH_PARAM_BUFFER_SIZE ((void*)0x02)
+#define HIP_LAUNCH_PARAM_END ((void*)0x03)
+
     typedef struct my_hipDeviceProp_t {
         char name[256];            ///< Device name.
         size_t totalGlobalMem;     ///< Size of global memory region (in bytes).
@@ -363,6 +394,7 @@ extern "C" {
     my_hipError_t (*hipModuleLaunchKernel_fptr)(my_hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
                                                 unsigned int, my_hipStream_t, void**, void**) = NULL;
     my_hipError_t (*hipModuleLoad_fptr)(my_hipModule_t*, const char*) = NULL;
+    my_hipError_t (*hipModuleGetFunction_fptr)(my_hipFunction_t*, my_hipModule_t, const char*) = NULL;
     my_hipError_t (*hipFree_fptr)(void*) = NULL;
     my_hipError_t (*hipMalloc_fptr)(void**, size_t) = NULL;
     my_hipError_t (*hipMemcpy_fptr)(void*, const void*, size_t, my_hipMemcpyKind) = NULL;
@@ -588,16 +620,27 @@ extern "C" {
         if (hipLaunchKernel_fptr == NULL) {
             hipLaunchKernel_fptr = ( my_hipError_t (*) (const void*, dim3, dim3, void**, size_t, my_hipStream_t)) dlsym(rocmLibHandle, "hipLaunchKernel");
         } 
+        if (hipModuleLoad_fptr == NULL) {
+            hipModuleLoad_fptr = ( my_hipError_t (*) (my_hipModule_t* , const char* )) dlsym(rocmLibHandle, "hipModuleLoad");
+        }
 
         if (hipKernelNameRefByPtr_fptr == NULL) {
             hipKernelNameRefByPtr_fptr = ( const char* (*) (const void*, my_hipStream_t)) dlsym(rocmLibHandle, "hipKernelNameRefByPtr");
+        }
+        if (hipModuleLaunchKernel_fptr == NULL) {
+            hipModuleLaunchKernel_fptr = ( my_hipError_t (*) (my_hipFunction_t, unsigned int, unsigned int, unsigned int,
+                                                              unsigned int, unsigned int, unsigned int, unsigned int,
+                                                              my_hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
+        }
+        if (hipModuleGetFunction_fptr == NULL) {
+            hipModuleGetFunction_fptr = ( my_hipError_t (*) (my_hipFunction_t*, my_hipModule_t, const char*)) dlsym(rocmLibHandle, "hipModuleGetFunction");
         }
 
         std::string kernel_name((*hipKernelNameRefByPtr_fptr)(function_address, stream));
         
         std::vector<ArgInfo> arg_infos = getArgInfo(CODE_OBJECT_FILENAME);
         
-        size_t total_size = 0;
+        uint64_t total_size = 0;
         if (arg_infos.size() > 0) {
             total_size = arg_infos[arg_infos.size() - 1].offset + arg_infos[arg_infos.size() - 1].size;
         }
@@ -669,22 +712,73 @@ extern "C" {
             if (g_instruction_data.size() == 0) {
                 instructions_len = get_num_instructions();
                 instructions = get_instruction_data();
-            } else {
-                instructions_len = g_instruction_data.size();
-                instructions = g_instruction_data.data();
+            
+                std::printf("NUM INSTRS: %d\n", instructions_len);
+                
+                std::vector<Rewrite> rewrites;
+                
+                // MEMTRACE
+                size_t current_offset = 0;
+                for (int i = 0; i < instructions_len; i++) {
+                    Inst& inst = g_instruction_data[i];
+                    if (std::string(inst.inst_name).find("global_store") != std::string::npos) {
+                        Rewrite rewrite;
+                        rewrite.offset = inst.offset;
+                        std::printf("Adding offset: %d\n", inst.offset);
+                        rewrites.push_back(rewrite);
+                        break; // TODO
+                    }
+                }
+                //list_instrumentation_points(instructions, instructions_len, rewrites, &rewrites_len);
+                std::printf("NUM REWRITES: %d\n", rewrites.size());
+                /*
+                for (int i = 0; i < rewrites.size(); i++) {
+                    std::printf("REWRITE: %d OFFSET: %d", i, rewrites[i].offset);
+                }
+                */
+                
+                if (rewrites.size() != 0 ) {
+                    uint64_t* offset;
+                    uint64_t* buffer;
+                    (*hipMalloc_fptr)((void**)&offset, sizeof(uint64_t));
+                    (*hipMalloc_fptr)((void**)&buffer, sizeof(uint64_t) * 1024);
+                    g_memtrace_offset = offset;
+                    g_memtrace_buffer = buffer;
+                    std::printf("g_memtrace_offset: 0x%p", offset);
+                    std::printf("g_memtrace_buffer: 0x%p", buffer);
+
+                    modify_binary(rewrites);
+                    std::printf("Rewrites made and file saved (hopefully)\n"); 
+                }
             }
-            
-            std::printf("NUM INSTRS: %d\n", instructions_len);
-            
-            Rewrite** rewrites = NULL;
-            uint64_t rewrites_len = 0;
-            list_instrumentation_points(instructions, instructions_len, rewrites, &rewrites_len);
-            
-            //if (rewrites != NULL)
-                //modify_binary(*rewrites, rewrites_len);
         }   
  
-        my_hipError_t result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
+        my_hipError_t result;
+        if (REWRITE) {
+            std::printf("Launching module loaded kernel\n");
+
+            void* config[]{
+                        HIP_LAUNCH_PARAM_BUFFER_POINTER,
+               			arg_data.data(),
+                        HIP_LAUNCH_PARAM_BUFFER_SIZE,
+						&total_size,
+                        HIP_LAUNCH_PARAM_END};
+
+			my_hipModule_t rewrite_mod;
+			my_hipFunction_t rewrite_func;
+            if ((*hipModuleLoad_fptr)(&rewrite_mod, REWRITE_FILENAME) != hipSuccess) {
+				std::printf("Failed to load module\n");
+			}
+			std::printf("KERNEL: %s\n", kernel_name.c_str());
+            if ((*hipModuleGetFunction_fptr)(&rewrite_func, rewrite_mod, kernel_name.c_str()) != hipSuccess) {
+				std::printf("Failed to find function\n");
+			}
+            result = (*hipModuleLaunchKernel_fptr)(rewrite_func, numBlocks.x, numBlocks.y, numBlocks.z,
+                                                                           dimBlocks.x, dimBlocks.y, dimBlocks.z,
+                                                                           sharedMemBytes, stream, args, NULL);
+        } else {
+            result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
+        }
 
         return result;
     }
@@ -803,9 +897,10 @@ extern "C" {
             std::string triple;
             triple.reserve(desc.tripleSize + 1);
             std::memcpy(triple.data(), bytes.data() + sizeof(desc), desc.tripleSize);
-            triple[desc.tripleSize] = '\0';
+            triple[desc.tripleSize] = '\0'; // FIXME
 
-            if (desc.size > 0) {
+			std::string other(triple.c_str());
+            if (desc.size > 0 && other.find("gfx908") != std::string::npos) { // FIXME
                 // Write the code object to a file
                 printf("[%d] writing code object for %s:\n", g_curr_event, triple.c_str());
                 std::FILE* code = std::fopen(CODE_OBJECT_FILENAME, "wb");

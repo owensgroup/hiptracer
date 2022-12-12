@@ -14,12 +14,12 @@ EXECUTABLE=./vectoradd_hip.exe
 
 .PHONY: test
 
-CXXFLAGS=
+CXXFLAGS= -save-temps
 
 CXX=$(HIPCC)
 
 $(EXECUTABLE): $(OBJECTS) 
-	$(HIPCC) -g -O0 $(OBJECTS) -o $@
+	$(HIPCC) -save-temps -g -O0 $(OBJECTS) -o $@
 
 $(TRACER): ../../hip/hip.cpp
 	make -C ../../hip/

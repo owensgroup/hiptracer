@@ -39,14 +39,6 @@ THE SOFTWARE.
 #define THREADS_PER_BLOCK_Y  16
 #define THREADS_PER_BLOCK_Z  1
 
-struct FUBAR {
-    float* __restrict__ a;
-    float* __restrict__ b;
-    float* __restrict__ c;
-    int width;
-    int height;
-};
-
 __global__ void 
 vectoradd_float(float* __restrict__ a, float* __restrict__ b, float* __restrict__ c, int width,
                 int height)
