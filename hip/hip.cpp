@@ -19,25 +19,66 @@
 // ArgInfo, getArgInfo
 #include "elf.h"
 
+#include <hip/hip_runtime.h>
+
 #include "subprocess.h"
 #include "callbacks.h"
 
 bool REWRITE = true;
 bool APICAPTURE = false;
+bool DATACAPTURE = false;
+bool REPLAY = false;
 bool DEBUG = false;
+char* EVENTDB = NULL;
 
 int g_curr_event = 0;
-
-typedef void* my_hipStream_t;
 
 header_t hdr;
 std::vector<event_t> g_event_list;
 std::vector<data_t> g_data_list;
 uint64_t g_curr_offset = 0;
 
+sqlite3 *g_event_db = NULL;
+
+void* rocmLibHandle = NULL;
+
 #define CODE_OBJECT_FILENAME "gfx908.code"
 #define REWRITE_FILENAME "memtrace-gfx908.code"
 #define SUBPROCESS_BUFFER 4096
+
+extern "C" {
+
+__attribute__((constructor)) void hiptracer_init()
+{
+    // Setup options
+    auto as_bool = [](char* env) { return std::string(env) == "true" };
+    
+    REWRITE = as_bool(std::getenv("HIPTRACER_REWRITE"));
+    APICAPTURE = as_bool(std::getenv("HIPTRACER_APICAPTURE"));
+    DATACAPTURE = as_bool(std::getenv("HIPTRACER_DATACAPTURE"));
+    REPLAY = as_bool(std::getenv("HIPTRACER_REPLAY");
+    DEBUG = as_bool(std::getenv("HIPTRACER_DEBUG");
+    EVENTDB = std::getenv("HIPTRACER_EVENTDB");
+    
+    rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
+    if (rocmLibHandle == NULL) {
+        std::printf("Unable to open libamdhip64.so\n");
+        std::exit(-1);
+    }
+    
+    if (sqlite3_open(EVENTDB, &g_event_db) != SQLITE_OK) {
+        std::printf("Unable to open event database: %s\n", sqlite3_errmsg(g_event_db));
+        sqlite3_close(g_event_db);
+        std::exit(-1);
+    }
+    
+    char* create_table_sql = "DROP TABLE IF EXISTS Events;"
+                         "CREATE TABLE Events(Id INT, Name TEXT, Rc INT, Stream INT, Data BLOB);";
+    if(sqlite3_exec(g_event_db, create_table_sql, 0, 0, NULL)) {
+        std::printf("Failed to create Events table: %s\n", sqlite3_errmsg(g_event_db));
+        std::exit(-1);
+    }
+}
 
 void list_instrumentation_points(Inst* instructions, unsigned long instructions_len,
                                  Rewrite** rewrites, unsigned long* rewrites_len) {
@@ -254,17 +295,11 @@ void flush_files()
     write_data(data_file);
 }
 
-extern "C" {
+
     const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
 
 #define CLANG_OFFLOAD_BUNDLER_MAGIC "__CLANG_OFFLOAD_BUNDLE__"
 #define AMDGCN_AMDHSA_TRIPLE "hip-amdgcn-amd-amdhsa"
-
-    typedef struct dim3 {
-        uint32_t x;  ///< x
-        uint32_t y;  ///< y
-        uint32_t z;  ///< z
-    } dim3;
 
     /*
        typedef struct __ClangOffloadBundleDesc {
@@ -288,129 +323,29 @@ extern "C" {
        void*                       unused;
        } __CudaFatBinaryWrapper;
      */
-
-#define HIP_LAUNCH_PARAM_BUFFER_POINTER ((void*)0x01)
-#define HIP_LAUNCH_PARAM_BUFFER_SIZE ((void*)0x02)
-#define HIP_LAUNCH_PARAM_END ((void*)0x03)
-
-    typedef struct my_hipDeviceProp_t {
-        char name[256];            ///< Device name.
-        size_t totalGlobalMem;     ///< Size of global memory region (in bytes).
-        size_t sharedMemPerBlock;  ///< Size of shared memory region (in bytes).
-        int regsPerBlock;          ///< Registers per block.
-        int warpSize;              ///< Warp size.
-        int maxThreadsPerBlock;    ///< Max work items per work group or workgroup max size.
-        int maxThreadsDim[3];      ///< Max number of threads in each dimension (XYZ) of a block.
-        int maxGridSize[3];        ///< Max grid dimensions (XYZ).
-        int clockRate;             ///< Max clock frequency of the multiProcessors in khz.
-        int memoryClockRate;       ///< Max global memory clock frequency in khz.
-        int memoryBusWidth;        ///< Global memory bus width in bits.
-        size_t totalConstMem;      ///< Size of shared memory region (in bytes).
-        int major;  ///< Major compute capability.  On HCC, this is an approximation and features may
-        ///< differ from CUDA CC.  See the arch feature flags for portable ways to query
-        ///< feature caps.
-        int minor;  ///< Minor compute capability.  On HCC, this is an approximation and features may
-        ///< differ from CUDA CC.  See the arch feature flags for portable ways to query
-        ///< feature caps.
-        int multiProcessorCount;          ///< Number of multi-processors (compute units).
-        int l2CacheSize;                  ///< L2 cache size.
-        int maxThreadsPerMultiProcessor;  ///< Maximum resident threads per multi-processor.
-        int computeMode;                  ///< Compute mode.
-        int clockInstructionRate;  ///< Frequency in khz of the timer used by the device-side "clock*"
-        ///< instructions.  New for HIP.
-        // hipDeviceArch_t arch;      ///< Architectural feature flags.  New for HIP.
-        int concurrentKernels;     ///< Device can possibly execute multiple kernels concurrently.
-        int pciDomainID;           ///< PCI Domain ID
-        int pciBusID;              ///< PCI Bus ID.
-        int pciDeviceID;           ///< PCI Device ID.
-        size_t maxSharedMemoryPerMultiProcessor;  ///< Maximum Shared Memory Per Multiprocessor.
-        int isMultiGpuBoard;                      ///< 1 if device is on a multi-GPU board, 0 if not.
-        int canMapHostMemory;                     ///< Check whether HIP can map host memory
-        int gcnArch;                              ///< DEPRECATED: use gcnArchName instead
-        char gcnArchName[256];                    ///< AMD GCN Arch Name.
-        int integrated;            ///< APU vs dGPU
-        int cooperativeLaunch;            ///< HIP device supports cooperative launch
-        int cooperativeMultiDeviceLaunch; ///< HIP device supports cooperative launch on multiple devices
-        int maxTexture1DLinear;    ///< Maximum size for 1D textures bound to linear memory
-        int maxTexture1D;          ///< Maximum number of elements in 1D images
-        int maxTexture2D[2];       ///< Maximum dimensions (width, height) of 2D images, in image elements
-        int maxTexture3D[3];       ///< Maximum dimensions (width, height, depth) of 3D images, in image elements
-        unsigned int* hdpMemFlushCntl;      ///< Addres of HDP_MEM_COHERENCY_FLUSH_CNTL register
-        unsigned int* hdpRegFlushCntl;      ///< Addres of HDP_REG_COHERENCY_FLUSH_CNTL register
-        size_t memPitch;                 ///<Maximum pitch in bytes allowed by memory copies
-        size_t textureAlignment;         ///<Alignment requirement for textures
-        size_t texturePitchAlignment;    ///<Pitch alignment requirement for texture references bound to pitched memory
-        int kernelExecTimeoutEnabled;    ///<Run time limit for kernels executed on the device
-        int ECCEnabled;                  ///<Device has ECC support enabled
-        int tccDriver;                   ///< 1:If device is Tesla device using TCC driver, else 0
-        int cooperativeMultiDeviceUnmatchedFunc;        ///< HIP device supports cooperative launch on multiple
-        ///devices with unmatched functions
-        int cooperativeMultiDeviceUnmatchedGridDim;     ///< HIP device supports cooperative launch on multiple
-        ///devices with unmatched grid dimensions
-        int cooperativeMultiDeviceUnmatchedBlockDim;    ///< HIP device supports cooperative launch on multiple
-        ///devices with unmatched block dimensions
-        int cooperativeMultiDeviceUnmatchedSharedMem;   ///< HIP device supports cooperative launch on multiple
-        ///devices with unmatched shared memories
-        int isLargeBar;                  ///< 1: if it is a large PCI bar device, else 0
-        int asicRevision;                ///< Revision of the GPU in this device
-        int managedMemory;               ///< Device supports allocating managed memory on this system
-        int directManagedMemAccessFromHost; ///< Host can directly access managed memory on the device without migration
-        int concurrentManagedAccess;     ///< Device can coherently access managed memory concurrently with the CPU
-        int pageableMemoryAccess;        ///< Device supports coherently accessing pageable memory
-        ///< without calling hipHostRegister on it
-        int pageableMemoryAccessUsesHostPageTables; ///< Device accesses pageable memory via the host's page tables
-    } my_hipDeviceProp_t;
-
-
-    typedef enum my_hipError_t {
-        hipSuccess = 0,
-        hipErrorInvalidValue = 1,
-        hipErrorOutOfMemory = 2,
-        hipErrorMemoryAllocation = 2,
-        hipErrorNotInitialized = 3,
-        hipErrorInitializationError = 3,
-        hipErrorDeinitialized = 4,
-        hipErrorProfilerDisabled = 5
-    } my_hipError_t;
-
-    typedef enum my_hipMemcpyKind {
-        hipMemcpyHostToHost = 0,
-        hipMemcpyHostToDevice = 1,
-        hipMemcpyDeviceToHost = 2,
-        hipMemcpyDeviceToDevice = 3,
-        hipMemcpyDefault = 4
-    } my_hipMemcpyKind;
-
-    typedef void* my_hipFunction_t;
-    typedef void* my_hipModule_t;
     
-    void* rocmLibHandle = NULL;
-
-    my_hipError_t (*hipGetDeviceProperties_fptr)(my_hipDeviceProp_t*,int) = NULL;
+    hipError_t (*hipGetDeviceProperties_fptr)(hipDeviceProp_t*,int) = NULL;
     void* (*hipRegisterFatBinary_fptr)(const void*) = NULL;
-    my_hipError_t (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, my_hipStream_t) = NULL;
-    my_hipError_t (*hipSetupArgument_fptr)(const void* arg, size_t size, size_t offset) = NULL;
+    hipError_t (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, hipStream_t) = NULL;
+    hipError_t (*hipSetupArgument_fptr)(const void* arg, size_t size, size_t offset) = NULL;
 
-    my_hipError_t (*hipModuleLaunchKernel_fptr)(my_hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
-                                                unsigned int, my_hipStream_t, void**, void**) = NULL;
-    my_hipError_t (*hipModuleLoad_fptr)(my_hipModule_t*, const char*) = NULL;
-    my_hipError_t (*hipModuleGetFunction_fptr)(my_hipFunction_t*, my_hipModule_t, const char*) = NULL;
-    my_hipError_t (*hipFree_fptr)(void*) = NULL;
-    my_hipError_t (*hipMalloc_fptr)(void**, size_t) = NULL;
-    my_hipError_t (*hipMemcpy_fptr)(void*, const void*, size_t, my_hipMemcpyKind) = NULL;
+    hipError_t (*hipModuleLaunchKernel_fptr)(hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
+                                                unsigned int, hipStream_t, void**, void**) = NULL;
+    hipError_t (*hipModuleLoad_fptr)(hipModule_t*, const char*) = NULL;
+    hipError_t (*hipModuleGetFunction_fptr)(hipFunction_t*, hipModule_t, const char*) = NULL;
+    hipError_t (*hipFree_fptr)(void*) = NULL;
+    hipError_t (*hipMalloc_fptr)(void**, size_t) = NULL;
+    hipError_t (*hipMemcpy_fptr)(void*, const void*, size_t, hipMemcpyKind) = NULL;
 
-    const char* (*hipKernelNameRefByPtr_fptr)(const void*, my_hipStream_t) = NULL;
-    const char* (*hipKernelNameRef_fptr)(const my_hipFunction_t) = NULL;
+    const char* (*hipKernelNameRefByPtr_fptr)(const void*, hipStream_t) = NULL;
+    const char* (*hipKernelNameRef_fptr)(const hipFunction_t) = NULL;
 
-    my_hipError_t hipFree(void *p)
+    hipError_t hipFree(void *p)
     {
         g_curr_event++;
 
-        if (rocmLibHandle == NULL) { 
-            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
-        }
         if (hipFree_fptr == NULL) {
-            hipFree_fptr = (my_hipError_t (*) (void*)) dlsym(rocmLibHandle, "hipFree");
+            hipFree_fptr = (hipError_t (*) (void*)) dlsym(rocmLibHandle, "hipFree");
         }
 
         if (DEBUG) {
@@ -437,7 +372,7 @@ extern "C" {
             g_curr_offset += chunk.size;
         }
 
-        my_hipError_t result = (*hipFree_fptr)(p);
+        hipError_t result = (*hipFree_fptr)(p);
 
         if (DEBUG) {
             printf("[%d] \t result: %d\n", g_curr_event, result);
@@ -446,24 +381,19 @@ extern "C" {
  
     }
 
-    my_hipError_t hipMalloc(void** p, size_t size)
+    hipError_t hipMalloc(void** p, size_t size)
     { 
         g_curr_event++;
 
-        if (rocmLibHandle == NULL) { 
-            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
-        }
         if (hipMalloc_fptr == NULL) {
-            hipMalloc_fptr = (my_hipError_t (*) (void**, size_t)) dlsym(rocmLibHandle, "hipMalloc");
+            hipMalloc_fptr = (hipError_t (*) (void**, size_t)) dlsym(rocmLibHandle, "hipMalloc");
         }
-
 
         if (DEBUG) {
             printf("[%d] hooked: hipMalloc\n", g_curr_event);
             printf("[%d] calling: hipMalloc\n", g_curr_event); 
         }
-        my_hipError_t result = (*hipMalloc_fptr)(p, size);
-
+        hipError_t result = (*hipMalloc_fptr)(p, size);
 
         if (DEBUG) {
             printf("[%d] \t result: %d\n", g_curr_event, result);
@@ -493,15 +423,12 @@ extern "C" {
         return result; 
     }
 
-    my_hipError_t hipMemcpy(void *dst, const void *src, size_t size, my_hipMemcpyKind kind)
+    hipError_t hipMemcpy(void *dst, const void *src, size_t size, hipMemcpyKind kind)
     { 
         g_curr_event++;
 
-        if (rocmLibHandle == NULL) { 
-            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
-        }
         if (hipMemcpy_fptr == NULL) {
-            hipMemcpy_fptr = (my_hipError_t (*) (void*, const void*, size_t, my_hipMemcpyKind)) dlsym(rocmLibHandle, "hipMemcpy");
+            hipMemcpy_fptr = (hipError_t (*) (void*, const void*, size_t, hipMemcpyKind)) dlsym(rocmLibHandle, "hipMemcpy");
         }
 
         if (DEBUG) {
@@ -539,7 +466,7 @@ extern "C" {
             g_curr_offset += src_bytes.size;
 
         }
-        my_hipError_t result = (*hipMemcpy_fptr)(dst, src, size, kind);
+        hipError_t result = (*hipMemcpy_fptr)(dst, src, size, kind);
 
         if (DEBUG) {
             printf("[%d] \t result: %d\n", g_curr_event, result);
@@ -549,15 +476,12 @@ extern "C" {
         
     }
 
-    my_hipError_t hipGetDeviceProperties(my_hipDeviceProp_t* p_prop, int device)
+    hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
     {
         g_curr_event++;
 
-        if (rocmLibHandle == NULL) { 
-            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
-        }
         if (hipGetDeviceProperties_fptr == NULL) {
-            hipGetDeviceProperties_fptr = (my_hipError_t (*) (my_hipDeviceProp_t*, int)) dlsym(rocmLibHandle, "hipGetDeviceProperties");
+            hipGetDeviceProperties_fptr = (hipError_t (*) (hipDeviceProp_t*, int)) dlsym(rocmLibHandle, "hipGetDeviceProperties");
         }
 
         if (DEBUG) {
@@ -585,55 +509,49 @@ extern "C" {
             g_curr_offset += chunk.size;
         }
 
-        my_hipError_t result = (*hipGetDeviceProperties_fptr)(p_prop, device);
+        hipError_t result = (*hipGetDeviceProperties_fptr)(p_prop, device);
 
         printf("[%d] \t result: %d\n", g_curr_event, result);
         return result;
     }
 
-    my_hipError_t hipSetupArgument(const void * arg, size_t size, size_t offset)
+    hipError_t hipSetupArgument(const void * arg, size_t size, size_t offset)
     {
          g_curr_event++;
 
-        if (rocmLibHandle == NULL) {
-            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
-        }
         if (hipSetupArgument_fptr == NULL) {
-            hipSetupArgument_fptr = ( my_hipError_t (*) (const void*, size_t size, size_t offset)) dlsym(rocmLibHandle, "hipSetupArgument");
+            hipSetupArgument_fptr = ( hipError_t (*) (const void*, size_t size, size_t offset)) dlsym(rocmLibHandle, "hipSetupArgument");
         } 
 
         return (hipSetupArgument_fptr)(arg, size, offset);
     }
 
-    my_hipError_t hipLaunchKernel(const void* function_address,
+    hipError_t hipLaunchKernel(const void* function_address,
             dim3 numBlocks,
             dim3 dimBlocks,
             void** args,
             unsigned int sharedMemBytes ,
-            my_hipStream_t stream)
+            hipStream_t stream)
     {
         g_curr_event++;
 
-        if (rocmLibHandle == NULL) {
-            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
-        }
         if (hipLaunchKernel_fptr == NULL) {
-            hipLaunchKernel_fptr = ( my_hipError_t (*) (const void*, dim3, dim3, void**, size_t, my_hipStream_t)) dlsym(rocmLibHandle, "hipLaunchKernel");
+            hipLaunchKernel_fptr = ( hipError_t (*) (const void*, dim3, dim3, void**, size_t, hipStream_t)) dlsym(rocmLibHandle, "hipLaunchKernel");
         } 
         if (hipModuleLoad_fptr == NULL) {
-            hipModuleLoad_fptr = ( my_hipError_t (*) (my_hipModule_t* , const char* )) dlsym(rocmLibHandle, "hipModuleLoad");
+            hipModuleLoad_fptr = ( hipError_t (*) (hipModule_t* , const char* )) dlsym(rocmLibHandle, "hipModuleLoad");
         }
 
         if (hipKernelNameRefByPtr_fptr == NULL) {
-            hipKernelNameRefByPtr_fptr = ( const char* (*) (const void*, my_hipStream_t)) dlsym(rocmLibHandle, "hipKernelNameRefByPtr");
+            hipKernelNameRefByPtr_fptr = ( const char* (*) (const void*, hipStream_t)) dlsym(rocmLibHandle, "hipKernelNameRefByPtr");
         }
         if (hipModuleLaunchKernel_fptr == NULL) {
-            hipModuleLaunchKernel_fptr = ( my_hipError_t (*) (my_hipFunction_t, unsigned int, unsigned int, unsigned int,
+            hipModuleLaunchKernel_fptr = ( hipError_t (*) (hipFunction_t, unsigned int, unsigned int, unsigned int,
                                                               unsigned int, unsigned int, unsigned int, unsigned int,
-                                                              my_hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
+                                                              hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
         }
         if (hipModuleGetFunction_fptr == NULL) {
-            hipModuleGetFunction_fptr = ( my_hipError_t (*) (my_hipFunction_t*, my_hipModule_t, const char*)) dlsym(rocmLibHandle, "hipModuleGetFunction");
+            hipModuleGetFunction_fptr = ( hipError_t (*) (hipFunction_t*, hipModule_t, const char*)) dlsym(rocmLibHandle, "hipModuleGetFunction");
         }
 
         std::string kernel_name((*hipKernelNameRefByPtr_fptr)(function_address, stream));
@@ -677,7 +595,7 @@ extern "C" {
                 dim3 numBlocks;
                 dim3 dimBlocks;
                 unsigned int sharedMemBytes;
-                my_hipStream_t stream;
+                hipStream_t stream;
                 size_t name_size;
                 size_t arg_size;
             };
@@ -753,7 +671,7 @@ extern "C" {
             }
         }   
  
-        my_hipError_t result;
+        hipError_t result;
         if (REWRITE) {
             std::printf("Launching module loaded kernel\n");
 
@@ -764,8 +682,8 @@ extern "C" {
 						&total_size,
                         HIP_LAUNCH_PARAM_END};
 
-			my_hipModule_t rewrite_mod;
-			my_hipFunction_t rewrite_func;
+			hipModule_t rewrite_mod;
+			hipFunction_t rewrite_func;
             if ((*hipModuleLoad_fptr)(&rewrite_mod, REWRITE_FILENAME) != hipSuccess) {
 				std::printf("Failed to load module\n");
 			}
@@ -783,7 +701,7 @@ extern "C" {
         return result;
     }
 
-    my_hipError_t hipModuleLaunchKernel(my_hipFunction_t f,
+    hipError_t hipModuleLaunchKernel(hipFunction_t f,
             unsigned int gridDimX,
             unsigned int gridDimY,
             unsigned int gridDimZ,
@@ -791,21 +709,18 @@ extern "C" {
             unsigned int blockDimY,
             unsigned int blockDimZ,
             unsigned int sharedMemBytes,
-            my_hipStream_t stream,
+            hipStream_t stream,
             void ** kernelParams,
             void ** extra)
     {
         g_curr_event++;
 
-        if (rocmLibHandle == NULL) {
-            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
-        }
         if (hipModuleLaunchKernel_fptr == NULL) {
-            hipModuleLaunchKernel_fptr = ( my_hipError_t (*) (my_hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, my_hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
+            hipModuleLaunchKernel_fptr = ( hipError_t (*) (hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
         }
         
         if (hipKernelNameRef_fptr == NULL) {
-            hipKernelNameRef_fptr = ( const char* (*) (const my_hipFunction_t)) dlsym(rocmLibHandle, "hipKernelNameRef");
+            hipKernelNameRef_fptr = ( const char* (*) (const hipFunction_t)) dlsym(rocmLibHandle, "hipKernelNameRef");
         }
 
         std::string kernel_name((*hipKernelNameRef_fptr)(f));
@@ -833,7 +748,7 @@ extern "C" {
         printf("[%d] \t stream: %p\n", g_curr_event, stream); 
         printf("[%d] calling: hipModuleLaunchKernel\n", g_curr_event);
 
-        my_hipError_t result = (*hipModuleLaunchKernel_fptr)(f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ,
+        hipError_t result = (*hipModuleLaunchKernel_fptr)(f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ,
                                                                 sharedMemBytes, stream, kernelParams, extra);
 
         printf("[%d] \t result: %d\n", g_curr_event, result);
@@ -844,9 +759,6 @@ extern "C" {
 
     void* __hipRegisterFatBinary(const void* data)
     {
-        if (rocmLibHandle == NULL) {
-            rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
-        }
         if (hipRegisterFatBinary_fptr == NULL) {
             hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(rocmLibHandle, "__hipRegisterFatBinary");
         }

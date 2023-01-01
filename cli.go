@@ -5,7 +5,17 @@ import (
     "os"
     "flag"
     "gopkg.in/go-rillas/subprocess.v1"
+    tea "github.com/charmbracelet/bubbletea"
 )
+
+type model struct {
+    // events []string
+    // cursor int
+    // data ?? byte array? + size?, chunk?
+    choices []string
+    cursor int
+    selected map[int]struct{} 
+}
 
 func main() {
     libraryLocation := "hip/libhiptracer.so"
@@ -42,6 +52,8 @@ func main() {
     if (*tool == "memtrace") {
         objdump := subprocess.Run("llvm-objdump", "-d", "./memtrace-gfx908.code")
         fmt.Println(objdump)
+    } else if (*tool == "capture") {
+        connection, err = := net.Dial("tcp", "127.0.0.1:65266")
     } else {
         objdump := subprocess.Run("llvm-objdump", "-d", "./gfx908.code")
         fmt.Println(objdump)
