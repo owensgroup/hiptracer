@@ -5,8 +5,6 @@
 #include <string>
 #include <cstddef>
 
-#include <hip/hip_runtime.h>
-
 typedef enum HIP_EVENT {
     EVENT_UNDEFINED = 0,
     EVENT_DEVICE,

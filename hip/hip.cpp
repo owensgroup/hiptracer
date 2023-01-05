@@ -25,21 +25,20 @@
 bool DATACAPTURE = false;
 bool REPLAY = false;
 bool DEBUG = false;
+bool REWRITE = false;
 char* EVENTDB = NULL;
+
+int g_curr_event = 0;
 
 sqlite3 *g_event_db = NULL;
 
 void* rocmLibHandle = NULL;
-
 
 __attribute__((constructor)) void hiptracer_init()
 {
     // Setup options
     auto as_bool = [](char* env) { return (env != NULL) && std::string(env) == "true"; };
     
-    REWRITE = as_bool(std::getenv("HIPTRACER_REWRITE"));
-    APICAPTURE = as_bool(std::getenv("HIPTRACER_APICAPTURE"));
-    DATACAPTURE = as_bool(std::getenv("HIPTRACER_DATACAPTURE"));
     DEBUG = as_bool(std::getenv("HIPTRACER_DEBUG"));
     EVENTDB = std::getenv("HIPTRACER_EVENTDB");
 
@@ -64,11 +63,11 @@ __attribute__((constructor)) void hiptracer_init()
                               "DROP TABLE IF EXISTS EventMemcpy;"
                               "DROP TABLE IF EXISTS EventLaunch;"
                               "DROP TABLE IF EXISTS Code;"
-                              "CREATE TABLE Events(Id INT PRIMARY KEY, EventType INT, Name TEXT, Rc INT, Stream INT, Data BLOB);"
-                              "CREATE TABLE EventMalloc(Id INT PRIMARY KEY, Stream INT, Ptr INT64, INT Size);"
-                              "CREATE TABLE EventMemcpy(Id INT PRIMARY KEY, Stream INT, Dst INT64, Src INT64, Size INT, Kind INT, HostData BLOB);"
-                              "CREATE TABLE EventLaunch(Id INT PRIMARY KEY, Stream INT, KernelName TEXT, NumX INT, NumY INT, NumZ INT,DimX INT, DimY INT, DimZ INT, SharedMem INT, ArgData BLOB, ArgSize INT);"
-                              "CREATE TABLE Code(Id INT PRIMARY KEY, Triple TEXT, FileName TEXT);";
+                              "CREATE TABLE Events(Id INTEGER PRIMARY KEY, EventType INT, Name TEXT, Rc INT, Stream INT, Data BLOB);"
+                              "CREATE TABLE EventMalloc(Id INTEGER PRIMARY KEY, Stream INT, Ptr INT64, INT Size);"
+                              "CREATE TABLE EventMemcpy(Id INTEGER PRIMARY KEY, Stream INT, Dst INT64, Src INT64, Size INT, Kind INT, HostData BLOB);"
+                              "CREATE TABLE EventLaunch(Id INTEGER PRIMARY KEY, Stream INT, KernelName TEXT, NumX INT, NumY INT, NumZ INT,DimX INT, DimY INT, DimZ INT, SharedMem INT, ArgData BLOB, ArgSize INT);"
+                              "CREATE TABLE Code(Id INTEGER PRIMARY KEY, Triple TEXT, FileName TEXT);";
     if(sqlite3_exec(g_event_db, create_events_sql, 0, 0, NULL)) {
         std::printf("Failed to create Events table: %s\n", sqlite3_errmsg(g_event_db));
         std::exit(-1);
@@ -134,7 +133,7 @@ int insert_memcpy(int event_id, int stream, void* dst, void* src, size_t size, h
 int insert_event(HIP_EVENT type, char* name, int hipRc, int stream, void* data, size_t size)
 {
     sqlite3_stmt* pStmt = NULL;
-    const char* sql = "INSERT INTO Events(EventType, Name, Rc, Stream, Data) VALUES(?, ?, ?, ?, ?) RETURNING Id;";
+    const char* sql = "INSERT INTO Events(EventType, Name, Rc, Stream, Data) VALUES(?, ?, ?, ?, ?);";
 
     int event_id = -1;
     int rc = sqlite3_prepare_v2(g_event_db, sql, -1, &pStmt, 0);
@@ -247,9 +246,6 @@ hipError_t hipMemcpy(void *dst, const void *src, size_t size, hipMemcpyKind kind
         printf("[%d] calling: hipMempcy\n", g_curr_event); 
     }
 
-    if (APICAPTURE) {
-
-    }
     hipError_t result = (*hipMemcpy_fptr)(dst, src, size, kind);
 
     if (DEBUG) {
@@ -273,10 +269,6 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
         printf("[%d] \t p_prop: %p\n", g_curr_event, p_prop);
         printf("[%d]\t device: %d\n", g_curr_event, device);
         printf("[%d] calling: hipGetDeviceProperties\n", g_curr_event); 
-    }
-
-    if (APICAPTURE) {
-
     }
 
     hipError_t result = (*hipGetDeviceProperties_fptr)(p_prop, device);
@@ -326,8 +318,9 @@ hipError_t hipLaunchKernel(const void* function_address,
 
     std::string kernel_name((*hipKernelNameRefByPtr_fptr)(function_address, stream));
     
-    std::vector<ArgInfo> arg_infos = getArgInfo(CODE_OBJECT_FILENAME);
+    //std::vector<ArgInfo> arg_infos = getArgInfo(CODE_OBJECT_FILENAME);
     
+    /*
     uint64_t total_size = 0;
     if (arg_infos.size() > 0) {
         total_size = arg_infos[arg_infos.size() - 1].offset + arg_infos[arg_infos.size() - 1].size;
@@ -347,8 +340,8 @@ hipError_t hipLaunchKernel(const void* function_address,
     e.name = __func__;
     e.type = EVENT_LAUNCH;
     e.offset = g_curr_offset;
+    */
 
-    if (APICAPTURE) {
         /*
         data_t name_chunk;
         name_chunk.bytes.resize(kernel_name.size());
@@ -381,7 +374,6 @@ hipError_t hipLaunchKernel(const void* function_address,
 
         g_curr_offset += e.size; 
         */
-    }
 
     if (DEBUG) {
         printf("[%d] hooked: hipLaunchKernel\n", g_curr_event);
@@ -394,81 +386,9 @@ hipError_t hipLaunchKernel(const void* function_address,
         printf("[%d] calling: hipLaunchKernel\n", g_curr_event);
     }
 
-    if (REWRITE) {
-        uint64_t instructions_len = 0;
-        Inst* instructions = nullptr;
-
-        if (g_instruction_data.size() == 0) {
-            instructions_len = get_num_instructions();
-            instructions = get_instruction_data();
-        
-            std::printf("NUM INSTRS: %d\n", instructions_len);
-            
-            std::vector<Rewrite> rewrites;
-            
-            // MEMTRACE
-            size_t current_offset = 0;
-            for (int i = 0; i < instructions_len; i++) {
-                Inst& inst = g_instruction_data[i];
-                if (std::string(inst.inst_name).find("global_store") != std::string::npos) {
-                    Rewrite rewrite;
-                    rewrite.offset = inst.offset;
-                    std::printf("Adding offset: %d\n", inst.offset);
-                    rewrites.push_back(rewrite);
-                    break; // TODO
-                }
-            }
-            //list_instrumentation_points(instructions, instructions_len, rewrites, &rewrites_len);
-            std::printf("NUM REWRITES: %d\n", rewrites.size());
-            /*
-            for (int i = 0; i < rewrites.size(); i++) {
-                std::printf("REWRITE: %d OFFSET: %d", i, rewrites[i].offset);
-            }
-            */
-            
-            if (rewrites.size() != 0 ) {
-                uint64_t* offset;
-                uint64_t* buffer;
-                (*hipMalloc_fptr)((void**)&offset, sizeof(uint64_t));
-                (*hipMalloc_fptr)((void**)&buffer, sizeof(uint64_t) * 1024);
-                g_memtrace_offset = offset;
-                g_memtrace_buffer = buffer;
-                std::printf("g_memtrace_offset: 0x%p", offset);
-                std::printf("g_memtrace_buffer: 0x%p", buffer);
-
-                modify_binary(rewrites);
-                std::printf("Rewrites made and file saved (hopefully)\n"); 
-            }
-        }
-    }   
 
     hipError_t result;
-    if (REWRITE) {
-        std::printf("Launching module loaded kernel\n");
-
-        void* config[]{
-                    HIP_LAUNCH_PARAM_BUFFER_POINTER,
-           			arg_data.data(),
-                    HIP_LAUNCH_PARAM_BUFFER_SIZE,
-					&total_size,
-                    HIP_LAUNCH_PARAM_END};
-
-		hipModule_t rewrite_mod;
-		hipFunction_t rewrite_func;
-        if ((*hipModuleLoad_fptr)(&rewrite_mod, REWRITE_FILENAME) != hipSuccess) {
-			std::printf("Failed to load module\n");
-		}
-		std::printf("KERNEL: %s\n", kernel_name.c_str());
-        if ((*hipModuleGetFunction_fptr)(&rewrite_func, rewrite_mod, kernel_name.c_str()) != hipSuccess) {
-			std::printf("Failed to find function\n");
-		}
-        result = (*hipModuleLaunchKernel_fptr)(rewrite_func, numBlocks.x, numBlocks.y, numBlocks.z,
-                                                                       dimBlocks.x, dimBlocks.y, dimBlocks.z,
-                                                                       sharedMemBytes, stream, args, NULL);
-    } else {
-        result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
-    }
-
+    result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
     return result;
 }
 

@@ -231,7 +231,11 @@ int edit_binary()
 __attribute__((constructor)) void replay_init()
 {
     char* db_filename = std::getenv("HIPTRACER_EVENTDB");
+    if (db_filename == NULL) {
+        db_filename = "tracer-default.sqlite";
+    }
  
+    std::printf("db: %s\n", db_filename);
     if (sqlite3_open(db_filename, &g_event_db) != SQLITE_OK) {
         std::exit(-1);
     }
@@ -246,6 +250,21 @@ __attribute__((destructor)) void replay_destroy()
     sqlite3_close(g_results_db);
 }
 
+int sql_callback(void *NotUsed, int argc, char **argv, 
+                    char **azColName)
+{
+    NotUsed = 0;
+
+    for (int i = 0; i < argc; i++) {
+
+        printf("%s = %s\n", azColName[i], argv[i] ? argv[i] : "NULL");
+    }
+
+    printf("\n");
+
+    return 0;
+}
+
 int main()
 {   
     char* line = NULL;
@@ -254,6 +273,9 @@ int main()
 
     while((line = readline("command > ")) != NULL) {
         if (line[0] == 'r') { // RUN
+            const char* events_sql = "SELECT * FROM Events;";
+            sqlite3_exec(g_event_db, events_sql, sql_callback, 0, NULL);
+
             // Iterate over events 
         
             for (; curr_event < events.size(); curr_event++)
