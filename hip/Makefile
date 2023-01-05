@@ -16,7 +16,7 @@ hiptracer.pic.o: hip.cpp sqlite.o
 msgpuck.o: msgpuck.c
 	$(CC) -o $@ $(INC) -fPIC -c msgpuck.c
 
-hints.o: ../lib/hints.c
+hints.o: hints.c
 	$(CC) -o $@ $(INC) -fPIC -c hints.c
 
 sqlite.o: sqlite3.c

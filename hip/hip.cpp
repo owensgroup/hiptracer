@@ -57,13 +57,17 @@ const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
 __attribute__((constructor)) void hiptracer_init()
 {
     // Setup options
-    auto as_bool = [](char* env) { return std::string(env) == "true"; };
+    auto as_bool = [](char* env) { return (env != NULL) && std::string(env) == "true"; };
     
     REWRITE = as_bool(std::getenv("HIPTRACER_REWRITE"));
     APICAPTURE = as_bool(std::getenv("HIPTRACER_APICAPTURE"));
     DATACAPTURE = as_bool(std::getenv("HIPTRACER_DATACAPTURE"));
     DEBUG = as_bool(std::getenv("HIPTRACER_DEBUG"));
     EVENTDB = std::getenv("HIPTRACER_EVENTDB");
+
+    if (EVENTDB == NULL) {
+        EVENTDB = "tracer-default.db";
+    }
     
     rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
     if (rocmLibHandle == NULL) {
@@ -83,14 +87,19 @@ __attribute__((constructor)) void hiptracer_init()
                               "DROP TABLE IF EXISTS EventLaunch;"
                               "DROP TABLE IF EXISTS Code;"
                               "CREATE TABLE Events(Id INT PRIMARY KEY, EventType INT, Name TEXT, Rc INT, Stream INT, Data BLOB);"
-                              "CREATE TABLE EventMalloc(Id INT PRIMARY KEY, Stream INT, INT64 Ptr, INT Size);"
-                              "CREATE TABLE EventMemcpy(Id INT PRIMARY KEY, Stream INT, INT64 Dst, INT64 Src, INT Size, INT Kind);"
-                              "CREATE TABLE EventLaunch(Id INT PRIMARY KEY, Stream INT, TEXT KernelName, INT NumX, INT NumY, INT NumZ, INT DimX, INT DimY, INT DimZ, INT SharedMem, BLOB ArgData, INT ArgSize);"
+                              "CREATE TABLE EventMalloc(Id INT PRIMARY KEY, Stream INT, Ptr INT64, INT Size);"
+                              "CREATE TABLE EventMemcpy(Id INT PRIMARY KEY, Stream INT, Dst INT64, Src INT64, Size INT, Kind INT);"
+                              "CREATE TABLE EventLaunch(Id INT PRIMARY KEY, Stream INT, KernelName TEXT, NumX INT, NumY INT, NumZ INT,DimX INT, DimY INT, DimZ INT, SharedMem INT, ArgData BLOB, ArgSize INT);"
                               "CREATE TABLE Code(Id INT PRIMARY KEY, Triple TEXT, FileName TEXT);";
     if(sqlite3_exec(g_event_db, create_events_sql, 0, 0, NULL)) {
         std::printf("Failed to create Events table: %s\n", sqlite3_errmsg(g_event_db));
         std::exit(-1);
     }
+}
+
+__attribute__((destructor)) void hiptracer_deinit()
+{
+    sqlite3_close(g_event_db);
 }
 
 void list_instrumentation_points(Inst* instructions, unsigned long instructions_len,
@@ -729,9 +738,11 @@ void* __hipRegisterFatBinary(const void* data)
         std::string triple;
         triple.reserve(desc.tripleSize + 1);
         std::memcpy(triple.data(), bytes.data() + sizeof(desc), desc.tripleSize);
-        triple[desc.tripleSize] = '\0'; // FIXME
+        triple[desc.tripleSize] = '\0';
 
-        std::FILE* code = std::fopen(("./" + triple).c_str(), "wb");
+        std::string filename = std::string("./") + triple.c_str() + '-' + std::to_string(i); // FIXME
+        std::printf("FILENAME:%s\n", filename.c_str());
+        std::FILE* code = std::fopen(filename.c_str(), "wb");
         std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
         std::fclose(code);
 
