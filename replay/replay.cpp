@@ -48,19 +48,11 @@ int step_event(event_t replay_event)
 
         hipGetDeviceProperties(my_devProp, device);
     } else if (event.type == EVENT_MEMCPY) {
-        std::printf("\thipMemcpy\n");
-
-        std::printf("event size: %lu\n", event.size);
-
         uintptr_t dst;
         uintptr_t src;
         size_t size;
-        hipMemcpyKind kind; 
-
-        std::fread(&dst, sizeof(void*), 1, data_fp);
-        std::fread(&src, sizeof(const void*), 1, data_fp);
-        std::fread(&size, sizeof(size_t), 1, data_fp);
-        std::fread(&kind, sizeof(hipMemcpyKind), 1, data_fp);
+        hipMemcpyKind kind;
+        std::vector<std::byte> buffer;
 
         if (kind == hipMemcpyHostToDevice) {
             auto it = allocations.find(dst);
@@ -70,13 +62,9 @@ int step_event(event_t replay_event)
             
             void* real_dst = (void*) it->second;
             
-            std::printf("\t size: %lu\n", size);
-            std::printf("\t reading host buffer of size %zu from trace...\n", size);
-            std::vector<std::byte> buffer(size);
-            std::fread(buffer.data(), sizeof(std::byte), size, data_fp); 
+            buffer.resize(size);
+            // Recover host buffer from capture...
 
-            std::printf("Fifth value is %f\n", ((float*)buffer.data())[5]);
-            std::printf("\t replaying HostToDev MemCpy\n");
             
             hipMemcpy(real_dst, buffer.data(), size, kind);
         } else if (kind == hipMemcpyDeviceToHost) {
@@ -106,17 +94,8 @@ int step_event(event_t replay_event)
         uint64_t name_size;
         uint64_t args_size;
 
-        std::fread(&function_address, sizeof(uint64_t), 1, data_fp);
-        std::fread(&numBlocks, sizeof(dim3), 1, data_fp);
-        std::fread(&dimBlocks, sizeof(dim3), 1, data_fp);
-        std::fread(&sharedMemBytes, sizeof(unsigned int), 1, data_fp);
-        std::fread(&stream, sizeof(hipStream_t), 1, data_fp);
-        std::fread(&name_size, sizeof(name_size), 1, data_fp);
-        std::fread(&args_size, sizeof(args_size), 1, data_fp);
-
         std::string kernel_name;
         kernel_name.resize(name_size);
-        std::fread(kernel_name.data(), sizeof(char), name_size, data_fp);
 
         std::printf("\tFunction address %lx\n", function_address);
         std::printf("\tnumBlocks %d %d %d\n", numBlocks.x, numBlocks.y, numBlocks.z);
@@ -127,7 +106,6 @@ int step_event(event_t replay_event)
         std::printf("\tReading arg data from trace\n");
         std::vector<std::byte> args_bytes;
         args_bytes.resize(args_size);
-        std::fread(args_bytes.data(), sizeof(std::byte), args_size, data_fp);
 
         std::printf("\tGetting arg info from code object\n");
         uint64_t total_argsize = 0;
@@ -195,9 +173,6 @@ int step_event(event_t replay_event)
         void* ptr = NULL; 
         size_t size;
 
-        std::fread(&ptr, sizeof(void*), 1, data_fp);
-        std::fread(&size, sizeof(size_t), 1, data_fp);
-
         std::printf("\tRead pointer %p\n", ptr);
         std::printf("\tRead size %lu\n", size); 
 
@@ -222,7 +197,6 @@ int step_event(event_t replay_event)
         std::printf("\thipFree\n");
 
         void* p = NULL;
-        std::fread(&p, sizeof(void*), 1, data_fp);
         std::printf("\t\tTrace freed ptr:%p\n", p);
 
         void* real_ptr = NULL;
@@ -274,19 +248,10 @@ __attribute__((destructor)) void replay_destroy()
 
 int main()
 {   
-    std::FILE* data_fp = trace.data_fp;
-
-    std::vector<event_t>& events = trace.events;
-    std::vector<data_t> chunks;
-    
     char* line = NULL;
     int curr_event = 0;
 
     while((line = readline("command > ")) != NULL) {
-        if (line[0] == 'i') { // INSPECT
-            std::system("llvm-objdump -d './gfx908.code'");
-        }
-
         if (line[0] == 'r') { // RUN
             // Iterate over events 
         
@@ -325,71 +290,6 @@ int main()
         if (line[0] == 's') { // STEP
             event_t replay_event = events[curr_event];
             step_event(replay_event);
-        }
-        
-        if (line[0] == 'e') { // EDIT
-            // Get offset from input
-            std::string l(line);
-            if (l.find(" ") == std::string::npos) {
-                std::printf("e [offset]\nChoose program offset (decimal)\n");
-                continue;
-            }
-            std::string off_str = l.substr(l.find(" "), l.size());
-            int16_t offset = std::atoi(off_str.c_str()); 
-            
-            elfio reader;
-            if (!reader.load("./gfx908.code")) {
-                std::printf("Failed to load\n");
-                continue;
-            }
-        
-            Elf_Half sec_num = reader.sections.size(); 
-            for (int i = 0; i < sec_num; i++) {
-                section* psec = reader.sections[i];
-            
-                if (psec) {                    
-                    std::string sec_name = psec->get_name();
-                    const std::string TEXT = ".text";
-                    if(sec_name == TEXT) {
-                        std::printf("Found .text\n");                               
-                        std::vector<std::byte> code_buff(psec->get_size());
-                        std::memcpy(code_buff.data(), psec->get_data(), psec->get_size());
-                        
-                        int16_t jump = psec->get_size() - offset; 
-                        uint32_t new_inst = 0xBF820000; // s_branch [offset]
-                        uint32_t ret_inst = 0xBF820000; // s_branch [offset]
-                        new_inst |= 3; // (jump / 4) - 1;
-                        int16_t ret_jump = -8; //(-jump / 4) - 1;
-                        ret_inst |= ((uint16_t)ret_jump);
-                        
-                        uint32_t old_inst = 0x0; // FIXME ~ Target instr could be 64 bits, ask llvm-mc
-                        std::memcpy(&old_inst, &code_buff[offset], sizeof(old_inst));
-                        std::memcpy(&code_buff[offset], &new_inst, sizeof(old_inst));
-                        
-                        // Instrument before old instructions
-                        //std::string new_code = "\x00\x00\x80\xBF\x00\x00\x00\x00";
-                        //std::printf("new: %s\n", new_code.c_str());
-                        //new_code.append((char*) &old_inst, sizeof(old_inst));
-                        //new_code.append((char*) &ret_inst, sizeof(ret_inst));
-                        
-                        psec->set_data((const char*)code_buff.data(), code_buff.size());
-                        //psec->append_data(new_code);
-                        
-                        uint32_t new_code = 0x8004FF80;
-                        uint32_t new_code2 = 0x4048F5C3;
-                        uint32_t new_code3 = 0x7E0C0204;
-                        psec->append_data((char*) &new_code, sizeof(new_code));
-                        psec->append_data((char*) &new_code2, sizeof(new_code2));
-                        psec->append_data((char*) &new_code3, sizeof(new_code3));
-                        psec->append_data((char*) &old_inst, sizeof(old_inst));
-                        psec->append_data((char*) &ret_inst, sizeof(ret_inst));
-                        
-                        reader.save("./gfx908.code");
-                    }
-                }
-            }
-            
-            
         }
     }
 }

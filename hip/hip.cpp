@@ -8,9 +8,6 @@
 #include <functional>
 
 #include <dlfcn.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdint.h>
 
 #include <zstd.h>
 
@@ -23,35 +20,16 @@
 #include <hip/hip_runtime.h>
 
 #include "sqlite3.h"
-#include "subprocess.h"
 #include "callbacks.h"
 
-bool REWRITE = true;
-bool APICAPTURE = false;
 bool DATACAPTURE = false;
 bool REPLAY = false;
 bool DEBUG = false;
 char* EVENTDB = NULL;
 
-int g_curr_event = 0;
-
-header_t hdr;
-std::vector<event_t> g_event_list;
-std::vector<data_t> g_data_list;
-uint64_t g_curr_offset = 0;
-
 sqlite3 *g_event_db = NULL;
 
 void* rocmLibHandle = NULL;
-
-#define CODE_OBJECT_FILENAME "gfx908.code"
-#define REWRITE_FILENAME "memtrace-gfx908.code"
-#define SUBPROCESS_BUFFER 4096
-
-const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
-
-#define CLANG_OFFLOAD_BUNDLER_MAGIC "__CLANG_OFFLOAD_BUNDLE__"
-#define AMDGCN_AMDHSA_TRIPLE "hip-amdgcn-amd-amdhsa"
 
 
 __attribute__((constructor)) void hiptracer_init()
@@ -88,7 +66,7 @@ __attribute__((constructor)) void hiptracer_init()
                               "DROP TABLE IF EXISTS Code;"
                               "CREATE TABLE Events(Id INT PRIMARY KEY, EventType INT, Name TEXT, Rc INT, Stream INT, Data BLOB);"
                               "CREATE TABLE EventMalloc(Id INT PRIMARY KEY, Stream INT, Ptr INT64, INT Size);"
-                              "CREATE TABLE EventMemcpy(Id INT PRIMARY KEY, Stream INT, Dst INT64, Src INT64, Size INT, Kind INT);"
+                              "CREATE TABLE EventMemcpy(Id INT PRIMARY KEY, Stream INT, Dst INT64, Src INT64, Size INT, Kind INT, HostData BLOB);"
                               "CREATE TABLE EventLaunch(Id INT PRIMARY KEY, Stream INT, KernelName TEXT, NumX INT, NumY INT, NumZ INT,DimX INT, DimY INT, DimZ INT, SharedMem INT, ArgData BLOB, ArgSize INT);"
                               "CREATE TABLE Code(Id INT PRIMARY KEY, Triple TEXT, FileName TEXT);";
     if(sqlite3_exec(g_event_db, create_events_sql, 0, 0, NULL)) {
@@ -100,158 +78,6 @@ __attribute__((constructor)) void hiptracer_init()
 __attribute__((destructor)) void hiptracer_deinit()
 {
     sqlite3_close(g_event_db);
-}
-
-void list_instrumentation_points(Inst* instructions, unsigned long instructions_len,
-                                 Rewrite** rewrites, unsigned long* rewrites_len) 
-{
-    for (int i = 0; i < instructions_len; i++) {
-        Inst inst = instructions[i];
-
-        std::cout << "NAME: " << inst.inst_name << " OFFSET: " << inst.offset << " SIZE: " << inst.size << std::endl;
-    }
-}
-
-uint64_t* g_memtrace_buffer = 0x0;
-uint64_t* g_memtrace_offset = 0x0;
-void modify_binary(std::vector<Rewrite>& rewrites) {
-        elfio reader;
-        if (!reader.load(CODE_OBJECT_FILENAME)) {
-            std::printf("Failed to load binary for rewrite\n");
-            return;
-        }
-
-        Elf_Half sec_num = reader.sections.size(); 
-        for (int i = 0; i < sec_num; i++) {
-            section* psec = reader.sections[i];
-    
-            if (psec) {                    
-                std::string sec_name = psec->get_name();
-                const std::string TEXT = ".text";
-                const std::string NOTES = ".notes";
-                if(sec_name == TEXT) {
-                    std::printf("Found .text\n");                               
-                    std::vector<std::byte> code_buff(psec->get_size());
-                    std::memcpy(code_buff.data(), psec->get_data(), psec->get_size());
-
-                    uint64_t offset = (uint64_t) g_memtrace_offset;
-                    uint64_t buffer = (uint64_t) g_memtrace_buffer;
-
-                    uint32_t offset_lower = (uint32_t) offset; 
-                    uint32_t offset_higher = (uint32_t) (offset >> 32);
-                    uint32_t address_lower = ((uint32_t) buffer) & 0xFFFFF000;
-                    uint32_t address_higher = (uint32_t) (buffer >> 32);
-                    uint32_t address_last = ((uint32_t)buffer) & 0x00000FFF;
-
-                    for (int i = 0; i < rewrites.size(); i++) {
-                        uint64_t offset = rewrites[i].offset;
-                
-                        std::printf("Start: %xd JumpTO: %d\n", offset, psec->get_size());
-                        int16_t jump = 0x10F0 - offset - 4; // FIXME
-
-                        uint32_t new_inst = 0xBF820000; // s_branch [offset]
-                        uint32_t ret_inst = 0xBF820000; // s_branch [offset]
-                        new_inst |= 2;
-
-                        uint32_t nop_inst = 0xBF800000;
-                
-                        uint64_t old_inst; // FIXME ~ Target instr could be 64 bits, ask llvm-mc
-                        std::memcpy(&old_inst, &code_buff[offset], sizeof(old_inst));
-                        std::memcpy(&code_buff[offset], &new_inst, sizeof(new_inst));
-                        std::memcpy(&code_buff[offset + sizeof(uint32_t)], &nop_inst, sizeof(nop_inst));
-                
-                        psec->set_data((const char*)code_buff.data(), code_buff.size());
-                
-                        uint32_t new_code[17] = { 0x7E140281, 0x7E1002FF, offset_higher, 0x7E160280,
-                                                  0x7E1202FF, 
-                                                  offset_lower,
-                                                  0xDD890000, 0x0A000A08, 0xBF8C0070, 0x7E1402FF, address_higher, 0x7E1602FF,
-                                                  address_lower, (0xDC740 << 12) | (address_last), 0x0000000A, (uint32_t) old_inst,
-                                                  (uint32_t) (old_inst >> 32)};
-
-
-                        int16_t ret_jump = -20;
-                        ret_inst |= ((uint16_t)ret_jump);
-
-                        psec->append_data((char*) &new_code, sizeof(new_code));
-                        psec->append_data((char*) &ret_inst, sizeof(ret_inst));
-                    }
-                }
-            }
-        }
-    reader.save(REWRITE_FILENAME);
-}
-
-std::vector<Inst> g_instruction_data;
-uint64_t get_num_instructions() {
-    std::string command = std::string("/opt/rocm/llvm/bin/llvm-objdump -d --section=.text ") + std::string(CODE_OBJECT_FILENAME);
-    //std::cout << command << std::endl;
-
-    std::FILE* fp_output = NULL;
-    fp_output = popen(command.c_str(), "r");
-    if (fp_output == NULL) {
-        std::printf("Run failed\n");
-        return 0;
-    }
-    
-    char output[SUBPROCESS_BUFFER];
-    uint64_t num_instructions = 0;
-    uint64_t base = 0;
-    while(std::fread(output, 1, SUBPROCESS_BUFFER, fp_output) > 0) { 
-        std::istringstream ss(std::string(output, SUBPROCESS_BUFFER));
-
-        std::string line;
-        while(std::getline(ss, line)) {
-            if(line[0] == '\t') {
-                num_instructions++;
-
-                std::string name;
-                std::string word;
-                std::stringstream words(line);
-                Inst inst;
-                words >> name;
-
-                while(words >> word) {
-                    if (word == "//") {
-                        std::string offset;
-                        words >> offset;
-
-                        std::string op_lower;
-                        std::string op_higher;
-
-                        words >> op_lower;
-                        words >> op_higher;
-
-                        if(op_higher == "") {
-                            inst.size = Inst::SIZE32;
-                        } else if(name[0] == 'g') {
-                            inst.size = Inst::SIZE128;
-                        } else {
-                            inst.size = Inst::SIZE64;
-                        }
-
-                        if (op_lower.size() > 0 && name.size() > 0) { 
-                            inst.inst_name = name;
-                            inst.offset = std::stoi(offset, 0, 16);
-                            if (base == 0) {
-                                base = inst.offset;
-                            } 
-                            inst.offset -= base;
-                            
-                            g_instruction_data.push_back(inst);
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    return g_instruction_data.size();
-}
-
-Inst* get_instruction_data() {
-
-    return g_instruction_data.data();
 }
 
 std::vector<char> compress_data(void *data, size_t size)
@@ -327,13 +153,18 @@ int insert_event(HIP_EVENT type, char* name, int hipRc, int stream, void* data, 
     return event_id;
 }
 
-extern "C" {
-
 /*
    ****
    HIP Functions
    ****
 */
+
+const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
+
+#define CLANG_OFFLOAD_BUNDLER_MAGIC "__CLANG_OFFLOAD_BUNDLE__"
+#define AMDGCN_AMDHSA_TRIPLE "hip-amdgcn-amd-amdhsa"
+
+extern "C" {
 
 hipError_t (*hipFree_fptr)(void*) = NULL;
 hipError_t (*hipMalloc_fptr)(void**, size_t) = NULL;
@@ -363,10 +194,6 @@ hipError_t hipFree(void *p)
         printf("[%d] hooked: hipFree\n", g_curr_event);
         printf("[%d] \t p: %p\n", g_curr_event, p);
         printf("[%d] calling: hipFree\n", g_curr_event); 
-    }
-
-    if (APICAPTURE) {
-
     }
 
     hipError_t result = (*hipFree_fptr)(p);
