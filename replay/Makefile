@@ -21,7 +21,7 @@ CXXFLAGS = -g -I../include -std=c++17 -I/opt/rocm/llvm/include
 LIBS = -ldl
 
 replay: replay.o
-	$(HIPCC) ../hip/msgpuck.o ../hip/hints.o replay.o -L /opt/rocm/llvm/lib/ $(LIBS) -lreadline -o replay 
+	$(HIPCC) ../hip/msgpuck.o ../hip/sqlite.o ../hip/hints.o replay.o -L /opt/rocm/llvm/lib/ $(LIBS) -lreadline -o replay 
 
 replay.o: replay.cpp
 	$(HIPCC) $(CXXFLAGS) -c replay.cpp

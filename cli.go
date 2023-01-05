@@ -14,7 +14,7 @@ type model struct {
     // data ?? byte array? + size?, chunk?
     choices []string
     cursor int
-    selected map[int]struct{} 
+    selected map[int]struct{}
 }
 
 func main() {
@@ -53,7 +53,7 @@ func main() {
         objdump := subprocess.Run("llvm-objdump", "-d", "./memtrace-gfx908.code")
         fmt.Println(objdump)
     } else if (*tool == "capture") {
-        connection, err = := net.Dial("tcp", "127.0.0.1:65266")
+        fmt.Println("capture")
     } else {
         objdump := subprocess.Run("llvm-objdump", "-d", "./gfx908.code")
         fmt.Println(objdump)

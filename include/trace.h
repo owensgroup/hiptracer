@@ -17,6 +17,7 @@ typedef enum HIP_EVENT {
 typedef struct event_t {
     uint64_t id;
     const char* name;
+    int stream;
 
     HIP_EVENT type;
 
@@ -80,11 +81,6 @@ public:
 
         return OPEN_SUCCESS;
     }
-
-    event_t event(uint64_t event_idx) {
-
-    }
-
 };
 
 #endif // __HIP_TRACE_H__
