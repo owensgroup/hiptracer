@@ -93,7 +93,7 @@ std::vector<char> compress_data(void *data, size_t size)
 int insert_malloc(int event_id, int stream, void** p, size_t size)
 {
     sqlite3_stmt* pStmt = NULL;
-    const char* sql = "INSERT INTO EventMalloc(Id, Stream, Ptr, Size) VALUES(?, ?, ?, ?) RETURNING Id;";
+    const char* sql = "INSERT INTO EventMalloc(Id, Stream, Ptr, Size) VALUES(?, ?, ?, ?);";
 
     int rc = sqlite3_prepare_v2(g_event_db, sql, -1, &pStmt, 0);
 
@@ -103,16 +103,19 @@ int insert_malloc(int event_id, int stream, void** p, size_t size)
     rc = sqlite3_bind_int(pStmt, 4, size);
 
     rc = sqlite3_step(pStmt);
+    if (rc == SQLITE_ROW) {
+        event_id = sqlite3_column_int(pStmt, 0);
+    }
     rc = sqlite3_finalize(pStmt);
 
-    // TODO: Get Primary key and return it!! 
-    return -222;  
+    if (rc != SQLITE_OK) return -1;
+    else return event_id;  
 }
 
-int insert_memcpy(int event_id, int stream, void* dst, void* src, size_t size, hipMemcpyKind kind)
+int insert_memcpy(int event_id, int stream, void* dst, const void* src, size_t size, hipMemcpyKind kind)
 {
     sqlite3_stmt* pStmt = NULL;
-    const char* sql = "INSERT INTO EventMemcpy(Id, Stream, Dst, Src, Size, Kind) VALUES(?, ?, ?, ?, ?, ?) RETURNING Id;";
+    const char* sql = "INSERT INTO EventMemcpy(Id, Stream, Dst, Src, Size, Kind, HostData) VALUES(?, ?, ?, ?, ?, ?);";
 
     int rc = sqlite3_prepare_v2(g_event_db, sql, -1, &pStmt, 0);
 
@@ -123,17 +126,21 @@ int insert_memcpy(int event_id, int stream, void* dst, void* src, size_t size, h
     rc = sqlite3_bind_int(pStmt, 5, size);
     rc = sqlite3_bind_int(pStmt, 6, kind);
 
+    if (kind == hipMemcpyHostToDevice) {
+        rc = sqlite3_bind_blob(pStmt, 7, src, size, SQLITE_TRANSIENT); // transient?         
+    }
+
     rc = sqlite3_step(pStmt);
     rc = sqlite3_finalize(pStmt);
 
-    // TODO: Get Primary key and return it!! 
-    return -222;  
+    if (rc != SQLITE_OK) return -1;
+    else return event_id; 
 }
 
 int insert_event(HIP_EVENT type, char* name, int hipRc, int stream, void* data, size_t size)
 {
     sqlite3_stmt* pStmt = NULL;
-    const char* sql = "INSERT INTO Events(EventType, Name, Rc, Stream, Data) VALUES(?, ?, ?, ?, ?);";
+    const char* sql = "INSERT INTO Events(EventType, Name, Rc, Stream, Data) VALUES(?, ?, ?, ?, ?) RETURNING Id;";
 
     int event_id = -1;
     int rc = sqlite3_prepare_v2(g_event_db, sql, -1, &pStmt, 0);
@@ -149,7 +156,8 @@ int insert_event(HIP_EVENT type, char* name, int hipRc, int stream, void* data, 
     }
     rc = sqlite3_finalize(pStmt);
 
-    return event_id;
+    if (rc != SQLITE_OK) return -1;
+    else return event_id;
 }
 
 /*
@@ -226,7 +234,7 @@ hipError_t hipMalloc(void** p, size_t size)
 
     const int stream = 0;
     int event_id = insert_event(EVENT_MALLOC, (char*)__func__, result, stream, NULL, 0);
-    int malloc_id = insert_malloc(event_id, stream, p, size);
+    insert_malloc(event_id, stream, p, size);
 
     return result;
 }
@@ -248,12 +256,13 @@ hipError_t hipMemcpy(void *dst, const void *src, size_t size, hipMemcpyKind kind
 
     hipError_t result = (*hipMemcpy_fptr)(dst, src, size, kind);
 
+    int event_id = insert_event(EVENT_MEMCPY, (char*)__func__, result, (int) 0, NULL, 0);
+    insert_memcpy(event_id, (int) 0, dst, src, size, kind);
+
     if (DEBUG) {
         printf("[%d] \t result: %d\n", g_curr_event, result);
     }
-    return result;
-
-    
+    return result;    
 }
 
 hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
@@ -273,7 +282,8 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
 
     hipError_t result = (*hipGetDeviceProperties_fptr)(p_prop, device);
 
-    printf("[%d] \t result: %d\n", g_curr_event, result);
+    insert_event(EVENT_DEVICE, (char*)__func__, (int) result, (int) 0, NULL, 0);
+
     return result;
 }
 
@@ -284,8 +294,11 @@ hipError_t hipSetupArgument(const void * arg, size_t size, size_t offset)
     if (hipSetupArgument_fptr == NULL) {
         hipSetupArgument_fptr = ( hipError_t (*) (const void*, size_t size, size_t offset)) dlsym(rocmLibHandle, "hipSetupArgument");
     } 
+    
+    hipError_t result = (hipSetupArgument_fptr)(arg, size, offset);
+    insert_event(EVENT_DEVICE, (char*)__func__, (int) result, (int) 0, NULL, 0);
 
-    return (hipSetupArgument_fptr)(arg, size, offset);
+    return result;
 }
 
 hipError_t hipLaunchKernel(const void* function_address,
