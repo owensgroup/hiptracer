@@ -11,8 +11,6 @@
 #include "elf.h"
 #include "elfio/elfio.hpp"
 
-#include "replay.h"
-
 #include <readline/readline.h>
 #include "sqlite3.h"
 
@@ -40,14 +38,15 @@ int step_event(event_t replay_event)
     hipEventCreate(&start);
     hipEventCreate(&finish);
 
-    hipEventRecord(start, replay_event.stream);
+    hipEventRecord(start, (hipStream_t)replay_event.stream); // FIXME
     /* Execute Event */
-    if (event.type == EVENT_DEVICE) {
+    if (replay_event.type == EVENT_DEVICE) {
         hipDeviceProp_t my_devProp;
         int device;
 
-        hipGetDeviceProperties(my_devProp, device);
-    } else if (event.type == EVENT_MEMCPY) {
+        hipGetDeviceProperties(&my_devProp, device);
+
+    } else if (replay_event.type == EVENT_MEMCPY) {
         uintptr_t dst;
         uintptr_t src;
         size_t size;
@@ -79,11 +78,11 @@ int step_event(event_t replay_event)
             
             hipMemcpy(buff.data(), (void*) getReplayPointer(src), size, kind);
         }
-    } else if (event.type == EVENT_LAUNCH) {
+    } else if (replay_event.type == EVENT_LAUNCH) {
         std::printf("\thipLaunchKernel\n");
 
-        std::printf("event size %lu\n", event.size);
-        std::printf("Reading from offset %lu\n", event.offset);
+        std::printf("event size %lu\n", replay_event.size);
+        std::printf("Reading from offset %lu\n", replay_event.offset);
 
         uint64_t function_address;
         dim3 numBlocks;
@@ -152,7 +151,7 @@ int step_event(event_t replay_event)
         } else {
             // FIXME
             std::printf("\t ERROR unable to find %s\n", kernel_name.c_str());
-            continue;
+            return -1;
         }
 
         std::printf("\t Launching...\n");
@@ -167,7 +166,7 @@ int step_event(event_t replay_event)
         hipModuleLaunchKernel(kernel,numBlocks.x, numBlocks.y, numBlocks.z,
                                       dimBlocks.x, dimBlocks.y, dimBlocks.z,
                                       sharedMemBytes, stream, NULL, &config[0]);
-    } else if (event.type == EVENT_MALLOC) {
+    } else if (replay_event.type == EVENT_MALLOC) {
         std::cout << "\thipMalloc" << std::endl;
 
         void* ptr = NULL; 
@@ -193,7 +192,7 @@ int step_event(event_t replay_event)
         std::printf("ret %p\n", ret);
 
         allocations.insert({ptr_as_int, ret_as_int});
-    } else if (event.type == EVENT_FREE) {
+    } else if (replay_event.type == EVENT_FREE) {
         std::printf("\thipFree\n");
 
         void* p = NULL;
@@ -210,11 +209,12 @@ int step_event(event_t replay_event)
         }
     } else {
         // Unhandled event type
+        std::printf("Error: Event UNHANDLED\n");
     }
     /* ****** */
-    hipEventRecord(finish, replay_event.stream);
+    hipEventRecord(finish, (hipStream_t) replay_event.stream);
 
-    timers.push_back(std::make_pair<hipEvent_t, hipEvent_t>(start, finish));
+    timers.push_back(std::pair<hipEvent_t, hipEvent_t>(start, finish));
 }
 
 int run_all_events(/* runner monitor */)
@@ -250,6 +250,7 @@ int main()
 {   
     char* line = NULL;
     int curr_event = 0;
+    std::vector<event_t> events;
 
     while((line = readline("command > ")) != NULL) {
         if (line[0] == 'r') { // RUN
@@ -262,7 +263,7 @@ int main()
             }
 
             char* sql = "DROP TABLE IF EXISTS Results;"
-                        "CREATE TABLE Results(EventId INT PRIMARY KEY, Result DOUBLE);"
+                        "CREATE TABLE Results(EventId INT PRIMARY KEY, Result DOUBLE);";
             sqlite3_exec(g_results_db, sql, 0, 0, NULL);
 
             sqlite3_stmt* pStmt = NULL;
@@ -276,7 +277,7 @@ int main()
                 sql = "INSERT INTO Results(EventId, Result) VALUES(?, ?);";
                 sqlite3_prepare(g_results_db, sql, -1, &pStmt, 0);
 
-                sqlite3_bind_int(pStmt, 1, event_id);
+                sqlite3_bind_int(pStmt, 1, events[i].id);
                 sqlite3_bind_double(pStmt, 2, (double) elapsed);
 
                 sqlite3_step(pStmt);
