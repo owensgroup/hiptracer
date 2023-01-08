@@ -65,10 +65,10 @@ __attribute__((constructor)) void hiptracer_init()
                               "DROP TABLE IF EXISTS EventMemcpy;"
                               "DROP TABLE IF EXISTS EventLaunch;"
                               "DROP TABLE IF EXISTS Code;"
-                              "CREATE TABLE Events(Id INTEGER PRIMARY KEY, EventType INT, Name TEXT, Rc INT, Stream INT, Data BLOB);"
+                              "CREATE TABLE Events(Id INTEGER PRIMARY KEY, EventType INT, Name TEXT, Rc INT, Stream INT);"
                               "CREATE TABLE EventMalloc(Id INTEGER PRIMARY KEY, Stream INT, Ptr INT64, INT Size);"
                               "CREATE TABLE EventMemcpy(Id INTEGER PRIMARY KEY, Stream INT, Dst INT64, Src INT64, Size INT, Kind INT, HostData BLOB);"
-                              "CREATE TABLE EventLaunch(Id INTEGER PRIMARY KEY, Stream INT, KernelName TEXT, NumX INT, NumY INT, NumZ INT,DimX INT, DimY INT, DimZ INT, SharedMem INT, ArgData BLOB, ArgSize INT);"
+                              "CREATE TABLE EventLaunch(Id INTEGER PRIMARY KEY, Stream INT, KernelName TEXT, NumX INT, NumY INT, NumZ INT,DimX INT, DimY INT, DimZ INT, SharedMem INT, ArgData BLOB);"
                               "CREATE TABLE Code(Id INTEGER PRIMARY KEY, Idx INTEGER, Triple TEXT, Path TEXT);";
     if(sqlite3_exec(g_event_db, create_events_sql, 0, 0, NULL)) {
         std::printf("Failed to create Events table: %s\n", sqlite3_errmsg(g_event_db));
@@ -76,7 +76,7 @@ __attribute__((constructor)) void hiptracer_init()
     }
 }
 
-void complete_stmt(sqlite3_stmt* pStmt) {
+void complete_sql_stmt(sqlite3_stmt* pStmt) {
     sqlite3_step(pStmt);
     sqlite3_finalize(pStmt);
 }
@@ -112,7 +112,7 @@ int insert_malloc(int event_id, int stream, void** p, size_t size)
     rc = sqlite3_bind_int64(pStmt, 3, (uint64_t) *p);
     rc = sqlite3_bind_int(pStmt, 4, size);
 
-    prepared.push_back(std::async(std::launch::deferred, complete_stmt, pStmt));
+    prepared.push_back(std::async(std::launch::deferred, complete_sql_stmt, pStmt));
 
     if (rc != SQLITE_OK) return -1;
     else return event_id;  
@@ -136,7 +136,7 @@ int insert_memcpy(int event_id, int stream, void* dst, const void* src, size_t s
         rc = sqlite3_bind_blob(pStmt, 7, src, size, SQLITE_TRANSIENT);
     }
 
-    prepared.push_back(std::async(std::launch::deferred, complete_stmt, pStmt));
+    prepared.push_back(std::async(std::launch::deferred, complete_sql_stmt, pStmt));
 
     if (rc != SQLITE_OK) return -1;
     else return event_id; 
@@ -155,7 +155,7 @@ int insert_event(HIP_EVENT type, char* name, int hipRc, int stream, int event_id
     rc = sqlite3_bind_int(pStmt, 4, stream);  // Default stream
     rc = sqlite3_bind_int(pStmt, 5, event_id);
 
-    prepared.push_back(std::async(std::launch::deferred, complete_stmt, pStmt));
+    prepared.push_back(std::async(std::launch::deferred, complete_sql_stmt, pStmt));
 
     if (rc != SQLITE_OK) return -1;
     else return event_id;
@@ -174,19 +174,18 @@ const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
 
 extern "C" {
 
-hipError_t (*hipFree_fptr)(void*) = NULL;
-hipError_t (*hipMalloc_fptr)(void**, size_t) = NULL;
-hipError_t (*hipMemcpy_fptr)(void*, const void*, size_t, hipMemcpyKind) = NULL;
-hipError_t (*hipGetDeviceProperties_fptr)(hipDeviceProp_t*,int) = NULL;
-void* (*hipRegisterFatBinary_fptr)(const void*) = NULL;
-hipError_t (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, hipStream_t) = NULL;
-hipError_t (*hipSetupArgument_fptr)(const void* arg, size_t size, size_t offset) = NULL;
+hipError_t  (*hipFree_fptr)(void*) = NULL;
+hipError_t  (*hipMalloc_fptr)(void**, size_t) = NULL;
+hipError_t  (*hipMemcpy_fptr)(void*, const void*, size_t, hipMemcpyKind) = NULL;
+hipError_t  (*hipGetDeviceProperties_fptr)(hipDeviceProp_t*,int) = NULL;
+void*       (*hipRegisterFatBinary_fptr)(const void*) = NULL;
+hipError_t  (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, hipStream_t) = NULL;
+hipError_t  (*hipSetupArgument_fptr)(const void* arg, size_t size, size_t offset) = NULL;
 
-hipError_t (*hipModuleLaunchKernel_fptr)(hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
+hipError_t  (*hipModuleLaunchKernel_fptr)(hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
                                          unsigned int, hipStream_t, void**, void**) = NULL;
-hipError_t (*hipModuleLoad_fptr)(hipModule_t*, const char*) = NULL;
-hipError_t (*hipModuleGetFunction_fptr)(hipFunction_t*, hipModule_t, const char*) = NULL;
-
+hipError_t  (*hipModuleLoad_fptr)(hipModule_t*, const char*) = NULL;
+hipError_t  (*hipModuleGetFunction_fptr)(hipFunction_t*, hipModule_t, const char*) = NULL;
 const char* (*hipKernelNameRefByPtr_fptr)(const void*, hipStream_t) = NULL;
 const char* (*hipKernelNameRef_fptr)(const hipFunction_t) = NULL;
 
@@ -336,9 +335,9 @@ hipError_t hipLaunchKernel(const void* function_address,
 
     std::string kernel_name((*hipKernelNameRefByPtr_fptr)(function_address, stream));
     
-    //std::vector<ArgInfo> arg_infos = getArgInfo(CODE_OBJECT_FILENAME);
+    std::vector<ArgInfo> arg_infos = getArgInfo(CODE_OBJECT_FILENAME);
     
-    /*
+    
     uint64_t total_size = 0;
     if (arg_infos.size() > 0) {
         total_size = arg_infos[arg_infos.size() - 1].offset + arg_infos[arg_infos.size() - 1].size;
@@ -346,13 +345,10 @@ hipError_t hipLaunchKernel(const void* function_address,
 
     std::vector<std::byte> arg_data(total_size);
 
-    //std::printf("num arg infos %d\n", arg_infos.size());
     for(int i = 0; i < arg_infos.size(); i++) {
-        //std::printf("offset: %d\n", arg_infos[i].offset);
-        //std::printf("adding %d\n", arg_infos[i].size);
         std::memcpy(arg_data.data() + arg_infos[i].offset, args + arg_infos[i].offset, arg_infos[i].size);
     }
-    
+    /*
     event_t e;
     e.id = g_curr_event;
     e.name = __func__;
@@ -450,7 +446,6 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
     printf("[%d] \t result: %d\n", g_curr_event, result);
 
     return result;
-
 }
 
 void* __hipRegisterFatBinary(const void* data)
@@ -526,4 +521,16 @@ void* __hipRegisterFatBinary(const void* data)
 
     return (*hipRegisterFatBinary_fptr)(data);
 }
+
+/* Unhandled
+hipError_t hipLaunchKernelGGL;
+hipError_t hipGetDeviceCount;
+hipError_t hipSetDevice;
+hipError_t hipBindTexture;
+hipError_t hipHostMalloc;
+hipError_t hipHostFree;
+hipError_t hipDeviceSynchronize;
+hipError_t hipMemGetInfo;
+hipError_t hipHostGetDevicePointer;
+*/
 };
