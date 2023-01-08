@@ -273,11 +273,22 @@ int main()
 
     while((line = readline("command > ")) != NULL) {
         if (line[0] == 'r') { // RUN
-            const char* events_sql = "SELECT * FROM Events;";
-            sqlite3_exec(g_event_db, events_sql, sql_callback, 0, NULL);
+            const char* events_sql = "SELECT Id, Name, EventType FROM Events;";
+            sqlite3_stmt* pStmt;
+            sqlite3_prepare_v2(g_event_db, events_sql, -1, &pStmt, 0);
 
-            // Iterate over events 
-        
+            while (sqlite3_step(pStmt) == SQLITE_ROW) {
+                event_t event;
+                event.id = sqlite3_column_int(pStmt, 0);
+                event.name = (const char *) sqlite3_column_text(pStmt, 1);
+                event.type = (HIP_EVENT) sqlite3_column_int(pStmt, 2);
+
+                events.push_back(event);
+            }
+
+            sqlite3_finalize(pStmt);
+
+            // Iterate over events
             for (; curr_event < events.size(); curr_event++)
             {
                 event_t replay_event = events[curr_event];
@@ -288,7 +299,7 @@ int main()
                         "CREATE TABLE Results(EventId INT PRIMARY KEY, Result DOUBLE);";
             sqlite3_exec(g_results_db, sql, 0, 0, NULL);
 
-            sqlite3_stmt* pStmt = NULL;
+            pStmt = NULL;
             for (int i = 0; i < timers.size(); i++) {
                 float elapsed = 0;
                 event_t event = events[i];
