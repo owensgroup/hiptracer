@@ -43,5 +43,5 @@
 *.pdb
 
 examples/**
-cuda/**
+docs/**
 *.code
