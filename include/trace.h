@@ -16,7 +16,7 @@ typedef enum HIP_EVENT {
 
 typedef struct event_t {
     uint64_t id;
-    const char* name;
+    std::string name;
     int stream;
 
     HIP_EVENT type;

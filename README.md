@@ -1,3 +1,10 @@
+HIPTracer is a set of libraries and a CLI utility for recording and playing back sequences of GPU API calls to AMD's HIP Runtime.
+
+# Usage
+```
+./hiptracer [--output tracer-default.db] [--tracer-library ./libhiptracer.so] <your gpu executable>
+```
+Creates a capture `tracer-default.db` in the current working directory.
 
 
 # Building

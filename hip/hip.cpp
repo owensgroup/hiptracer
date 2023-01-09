@@ -30,7 +30,7 @@ char* EVENTDB = NULL;
 
 int g_curr_event = 0;
 sqlite3 *g_event_db = NULL;
-std::string g_codeobj_filename;
+std::string g_codeobj_filename = "hipv4-amdgcn-amd-amdhsa--gfx908.code";
 
 void* rocmLibHandle = NULL;
 
@@ -121,7 +121,7 @@ int insert_free(int event_id, hipStream_t stream, void* p)
     return rc;
 }
 
-int insert_launch(int event_id, hipStream_t stream, const char* kernel_name, 
+int insert_launch(int event_id, hipStream_t stream, std::string kernel_name, 
                   dim3 num_blocks, dim3 dim_blocks, int shared_mem_bytes,
                   void* arg_data, size_t arg_size)
 {
@@ -133,7 +133,7 @@ int insert_launch(int event_id, hipStream_t stream, const char* kernel_name,
 
     rc = sqlite3_bind_int(pStmt, 1, event_id);
     rc = sqlite3_bind_int(pStmt, 2, (uint64_t)stream);
-    rc = sqlite3_bind_text(pStmt, 3, kernel_name, -1, SQLITE_STATIC);
+    rc = sqlite3_bind_text(pStmt, 3, kernel_name.c_str(), -1, SQLITE_TRANSIENT);
     rc = sqlite3_bind_int(pStmt, 4, num_blocks.x);
     rc = sqlite3_bind_int(pStmt, 5, num_blocks.y);
     rc = sqlite3_bind_int(pStmt, 6, num_blocks.z);
@@ -423,7 +423,7 @@ hipError_t hipLaunchKernel(const void* function_address,
 
     hipError_t result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
     insert_event(EVENT_LAUNCH, (char*)__func__, (int) result, stream, g_curr_event);
-    insert_launch(g_curr_event, stream, kernel_name.c_str(), numBlocks, dimBlocks, sharedMemBytes, arg_data.data(), arg_data.size());
+    insert_launch(g_curr_event, stream, kernel_name, numBlocks, dimBlocks, sharedMemBytes, arg_data.data(), arg_data.size());
 
     return result;
 }

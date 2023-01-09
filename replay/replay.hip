@@ -16,7 +16,7 @@
 
 sqlite3* g_event_db = NULL;
 sqlite3* g_results_db = NULL; 
-std::string g_codeobj_filename;
+std::string g_codeobj_filename = "./hipv4-amdgcn-amd-amdhsa--gfx908.code";
 
 std::unordered_map<uintptr_t, uintptr_t> allocations;
 std::unordered_map<uintptr_t, std::vector<std::byte>> host_buffers;
@@ -32,33 +32,112 @@ uintptr_t getReplayPointer(uintptr_t p)
     return allocations[(uintptr_t)p];
 }
 
-int get_code()
-{
-    const char* sql = "SELECT Filename FROM Code;";
-}
-
 int get_free(int event_id, uintptr_t& p)
 {
     const char* sql = "SELECT Ptr FROM EventFree WHERE Id = ?;";
+
+    sqlite3_stmt* pStmt;
+    sqlite3_prepare_v2(g_event_db, sql, -1, &pStmt, 0);
+    sqlite3_bind_int(pStmt, 1, event_id);
+
+    int rc = sqlite3_step(pStmt);
+    if (rc != SQLITE_ROW) {
+        std::printf("Failed to get launch %s\n", sqlite3_errmsg(g_event_db));
+    }
+ 
+    p = sqlite3_column_int(pStmt, 0);
+
+    return rc;
 }
 
 int get_memcpy(int event_id, uintptr_t& dst, uintptr_t& src, size_t& size, hipMemcpyKind& kind, std::vector<std::byte>& buffer)
 {
     const char* sql = "SELECT Dst, Src, Size, Kind, HostData FROM EventMemcpy WHERE Id = ?;";
+
+    sqlite3_stmt* pStmt;
+    sqlite3_prepare_v2(g_event_db, sql, -1, &pStmt, 0);
+    sqlite3_bind_int(pStmt, 1, event_id);
+
+    int rc = sqlite3_step(pStmt);
+    if (rc != SQLITE_ROW) {
+        std::printf("Failed to get launch %s\n", sqlite3_errmsg(g_event_db));
+    }
+ 
+    dst = sqlite3_column_int(pStmt, 0);
+    src = sqlite3_column_int(pStmt, 1);
+    size = sqlite3_column_int(pStmt, 2);
+    kind = (hipMemcpyKind) sqlite3_column_int(pStmt, 3);
+    if (kind == hipMemcpyHostToDevice) {
+        const void * blob = sqlite3_column_blob(pStmt, 4);
+        buffer.resize(size);
+        std::memcpy(buffer.data(), blob, size);
+    }
+
+    return rc;
 }
 
 int get_malloc(int event_id, uintptr_t& p, size_t& size)
 {
     const char* sql = "SELECT Ptr, Size FROM EventMalloc WHERE Id = ?;";
+
+    sqlite3_stmt* pStmt;
+    sqlite3_prepare_v2(g_event_db, sql, -1, &pStmt, 0);
+    sqlite3_bind_int(pStmt, 1, event_id);
+
+    int rc = sqlite3_step(pStmt);
+    if (rc != SQLITE_ROW) {
+        std::printf("Failed to get launch %s\n", sqlite3_errmsg(g_event_db));
+    }
+ 
+    p = sqlite3_column_int(pStmt, 0);
+    size = sqlite3_column_int(pStmt, 1);
+
+    return rc;
+
 }
 
 int get_launch(int event_id, hipStream_t& stream, std::string& kernel_name, dim3& numBlocks, dim3& dimBlocks, unsigned int& sharedMemBytes, std::vector<std::byte>& arg_data)
 {
-    const char* sql = "SELECT Stream, KernelName, NumX, NumY, NumZ, DimX, DimY, DimZ, SharedMemBytes, ArgData FROM EventLaunch WHERE Id = ?;";
+    const char* sql = "SELECT Stream, KernelName, NumX, NumY, NumZ, DimX, DimY, DimZ, SharedMem, ArgData FROM EventLaunch WHERE Id = ?;";
+
+    sqlite3_stmt* pStmt;
+    sqlite3_prepare_v2(g_event_db, sql, -1, &pStmt, 0);
+    sqlite3_bind_int(pStmt, 1, event_id);
+
+    int rc = sqlite3_step(pStmt);
+    if (rc != SQLITE_ROW) {
+        std::printf("Failed to get launch %s\n", sqlite3_errmsg(g_event_db));
+    }
+ 
+    stream = (hipStream_t) sqlite3_column_int(pStmt, 0);
+
+    std::string name((char*)sqlite3_column_text(pStmt, 1));
+    kernel_name = name;
+
+    std::printf("Kernel name %s\n", name.c_str());
+
+    numBlocks.x = sqlite3_column_int(pStmt, 2);
+    numBlocks.y = sqlite3_column_int(pStmt, 3);
+    numBlocks.z = sqlite3_column_int(pStmt, 4);
+    dimBlocks.x = sqlite3_column_int(pStmt, 5);
+    dimBlocks.y = sqlite3_column_int(pStmt, 6);
+    dimBlocks.z = sqlite3_column_int(pStmt, 7);
+
+    sharedMemBytes = sqlite3_column_int(pStmt, 8);
+
+    size_t args_size = sqlite3_column_bytes(pStmt, 9);
+    std::printf("SIZE: %d\n", args_size);
+    arg_data.resize(args_size);
+
+    const void * blob = sqlite3_column_blob(pStmt, 9);
+    std::memcpy(arg_data.data(), blob, args_size);
+
+    return rc;
 }
 
 int step_event(event_t replay_event)
 {
+    std::printf("%s\n", replay_event.name.c_str());
     hipEvent_t start;
     hipEvent_t finish;
     hipEventCreate(&start);
@@ -72,7 +151,6 @@ int step_event(event_t replay_event)
         int device = 0; // FIXME
 
         hipGetDeviceProperties(&my_devProp, device);
-
     } else if (replay_event.type == EVENT_MEMCPY) {
         std::printf("hipMemcpy\n");
 
@@ -144,6 +222,8 @@ int step_event(event_t replay_event)
                 auto offset = arg_infos[i].offset;
                 std::memcpy(&value, args.data() + offset, size);
 
+                std::printf("Looking for %d\n", value);
+
                 auto ptr_it = allocations.find(value);
                 if (ptr_it != allocations.end()) {
                     uintptr_t replay_value = ptr_it->second;
@@ -156,7 +236,7 @@ int step_event(event_t replay_event)
         }
         std::printf("\t Load code object\n");
         hipModule_t module;
-        hipError_t load_res = hipModuleLoad(&module, "./gfx908.code");
+        hipError_t load_res = hipModuleLoad(&module, g_codeobj_filename.c_str());
 
         if (load_res != hipSuccess) {
             std::printf("\t FAILED to LOAD CODE OBJECT\n");
@@ -234,9 +314,10 @@ int step_event(event_t replay_event)
         std::printf("Error: Event UNHANDLED\n");
     }
     /* ****** */
-    hipEventRecord(finish, (hipStream_t) replay_event.stream);
+    //hipEventRecord(finish, (hipStream_t) replay_event.stream);
 
-    timers.push_back(std::pair<hipEvent_t, hipEvent_t>(start, finish));
+    //timers.push_back(std::pair<hipEvent_t, hipEvent_t>(start, finish));
+    return 0;
 }
 
 __attribute__((constructor)) void replay_init()
@@ -269,14 +350,14 @@ int main()
 
     while((line = readline("command > ")) != NULL) {
         if (line[0] == 'r') { // RUN
-            const char* events_sql = "SELECT Id, Name, EventType FROM Events;";
+            const char* events_sql = "SELECT Id, Name, EventType FROM Events ORDER BY Id ASC;";
             sqlite3_stmt* pStmt;
             sqlite3_prepare_v2(g_event_db, events_sql, -1, &pStmt, 0);
 
             while (sqlite3_step(pStmt) == SQLITE_ROW) {
                 event_t event;
                 event.id = sqlite3_column_int(pStmt, 0);
-                event.name = (const char *) sqlite3_column_text(pStmt, 1);
+                event.name = std::string((char*)sqlite3_column_text(pStmt, 1));
                 event.type = (HIP_EVENT) sqlite3_column_int(pStmt, 2);
 
                 events.push_back(event);
@@ -311,7 +392,7 @@ int main()
 
                 sqlite3_step(pStmt);
                 sqlite3_finalize(pStmt); // FIXME
-                std::printf("\t Event ID: %d\t Elapsed: %f\t Name: %s\t Stream: %d\t \n", event.id, elapsed, event.name, event.stream);
+                std::printf("\t Event ID: %d\t Elapsed: %f\t Name: %s\t Stream: %d\t \n", event.id, elapsed, event.name.c_str(), event.stream);
             }
             
             return 0;
