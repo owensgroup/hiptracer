@@ -42,10 +42,6 @@
 *.idb
 *.pdb
 
-examples/
-*.data
-*.events
-dummy.tr
-cuda/
-ui/
+examples/**
+cuda/**
 *.code
