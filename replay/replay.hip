@@ -16,6 +16,7 @@
 
 sqlite3* g_event_db = NULL;
 sqlite3* g_results_db = NULL; 
+std::string g_codeobj_filename;
 
 std::unordered_map<uintptr_t, uintptr_t> allocations;
 std::unordered_map<uintptr_t, std::vector<std::byte>> host_buffers;
@@ -31,6 +32,31 @@ uintptr_t getReplayPointer(uintptr_t p)
     return allocations[(uintptr_t)p];
 }
 
+int get_code()
+{
+    const char* sql = "SELECT Filename FROM Code;";
+}
+
+int get_free(int event_id, uintptr_t& p)
+{
+    const char* sql = "SELECT Ptr FROM EventFree WHERE Id = ?;";
+}
+
+int get_memcpy(int event_id, uintptr_t& dst, uintptr_t& src, size_t& size, hipMemcpyKind& kind, std::vector<std::byte>& buffer)
+{
+    const char* sql = "SELECT Dst, Src, Size, Kind, HostData FROM EventMemcpy WHERE Id = ?;";
+}
+
+int get_malloc(int event_id, uintptr_t& p, size_t& size)
+{
+    const char* sql = "SELECT Ptr, Size FROM EventMalloc WHERE Id = ?;";
+}
+
+int get_launch(int event_id, hipStream_t& stream, std::string& kernel_name, dim3& numBlocks, dim3& dimBlocks, unsigned int& sharedMemBytes, std::vector<std::byte>& arg_data)
+{
+    const char* sql = "SELECT Stream, KernelName, NumX, NumY, NumZ, DimX, DimY, DimZ, SharedMemBytes, ArgData FROM EventLaunch WHERE Id = ?;";
+}
+
 int step_event(event_t replay_event)
 {
     hipEvent_t start;
@@ -38,33 +64,34 @@ int step_event(event_t replay_event)
     hipEventCreate(&start);
     hipEventCreate(&finish);
 
-    hipEventRecord(start, (hipStream_t)replay_event.stream); // FIXME
+    hipEventRecord(start, hipStreamDefault);
     /* Execute Event */
     if (replay_event.type == EVENT_DEVICE) {
+        std::printf("hipGetDeviceProperties\n");
         hipDeviceProp_t my_devProp;
-        int device;
+        int device = 0; // FIXME
 
         hipGetDeviceProperties(&my_devProp, device);
 
     } else if (replay_event.type == EVENT_MEMCPY) {
+        std::printf("hipMemcpy\n");
+
         uintptr_t dst;
         uintptr_t src;
         size_t size;
         hipMemcpyKind kind;
         std::vector<std::byte> buffer;
 
+        get_memcpy(replay_event.id, dst, src, size, kind, buffer);
+
         if (kind == hipMemcpyHostToDevice) {
             auto it = allocations.find(dst);
             if (it == allocations.end()) {
                 // Allocation not found on device
             }
-            
-            void* real_dst = (void*) it->second;
-            
-            buffer.resize(size);
-            // Recover host buffer from capture...
 
-            
+            void* real_dst = (void*) it->second;
+
             hipMemcpy(real_dst, buffer.data(), size, kind);
         } else if (kind == hipMemcpyDeviceToHost) {
             auto it = host_buffers.find(dst);
@@ -84,32 +111,24 @@ int step_event(event_t replay_event)
         std::printf("event size %lu\n", replay_event.size);
         std::printf("Reading from offset %lu\n", replay_event.offset);
 
-        uint64_t function_address;
+        std::string kernel_name;
         dim3 numBlocks;
         dim3 dimBlocks;
         unsigned int sharedMemBytes = 1;
         hipStream_t stream;
+        std::vector<std::byte> args;
 
-        uint64_t name_size;
-        uint64_t args_size;
+        get_launch(replay_event.id, stream, kernel_name, numBlocks, dimBlocks, sharedMemBytes, args);
 
-        std::string kernel_name;
-        kernel_name.resize(name_size);
-
-        std::printf("\tFunction address %lx\n", function_address);
         std::printf("\tnumBlocks %d %d %d\n", numBlocks.x, numBlocks.y, numBlocks.z);
         std::printf("\tsharedMemBytes %d\n", sharedMemBytes);
         std::printf("\tkernel_name %s\n", kernel_name.c_str());
-        std::printf("\t args size (in bytes) %d\n", args_size);
-
-        std::printf("\tReading arg data from trace\n");
-        std::vector<std::byte> args_bytes;
-        args_bytes.resize(args_size);
+        std::printf("\t args size (in bytes) %d\n", args.size());
 
         std::printf("\tGetting arg info from code object\n");
         uint64_t total_argsize = 0;
         
-        std::vector<ArgInfo> arg_infos = getArgInfo("gfx908.code");
+        std::vector<ArgInfo> arg_infos = getArgInfo(g_codeobj_filename.c_str());
         std::printf("arg_infos size %d\n", arg_infos.size());
 
         std::printf("\tChecking args for allocations\n");
@@ -123,13 +142,13 @@ int step_event(event_t replay_event)
                 uintptr_t value;
                 auto size = arg_infos[i].size;
                 auto offset = arg_infos[i].offset;
-                std::memcpy(&value, args_bytes.data() + offset, size);
+                std::memcpy(&value, args.data() + offset, size);
 
                 auto ptr_it = allocations.find(value);
                 if (ptr_it != allocations.end()) {
                     uintptr_t replay_value = ptr_it->second;
                     std::printf("Actual value %p\n", replay_value);
-                    std::memcpy(args_bytes.data() + offset, &replay_value, size); 
+                    std::memcpy(args.data() + offset, &replay_value, size); 
                 } else {
                     std::printf("Unable to find allocation\n");
                 }
@@ -156,9 +175,10 @@ int step_event(event_t replay_event)
 
         std::printf("\t Launching...\n");
 
+        size_t args_size = args.size();
         void* config[]{
             HIP_LAUNCH_PARAM_BUFFER_POINTER,
-            args_bytes.data(),
+            args.data(),
             HIP_LAUNCH_PARAM_BUFFER_SIZE,
             &args_size, // address of operator (&) is intended - very weird IMO
             HIP_LAUNCH_PARAM_END};
@@ -169,8 +189,10 @@ int step_event(event_t replay_event)
     } else if (replay_event.type == EVENT_MALLOC) {
         std::cout << "\thipMalloc" << std::endl;
 
-        void* ptr = NULL; 
+        uintptr_t ptr = NULL; 
         size_t size;
+
+        get_malloc(replay_event.id, ptr, size);
 
         std::printf("\tRead pointer %p\n", ptr);
         std::printf("\tRead size %lu\n", size); 
@@ -195,14 +217,14 @@ int step_event(event_t replay_event)
     } else if (replay_event.type == EVENT_FREE) {
         std::printf("\thipFree\n");
 
-        void* p = NULL;
-        std::printf("\t\tTrace freed ptr:%p\n", p);
+        uintptr_t p = NULL;
+        get_free(replay_event.id, p);
+        std::printf("\t\tTrace freed ptr:%p\n", p); 
 
         void* real_ptr = NULL;
         // Get actual pointer from allocations table
-        uintptr_t p_as_int = reinterpret_cast<uintptr_t>(p);
-        if (allocations.find(p_as_int) != allocations.end()) {
-            real_ptr = reinterpret_cast<void*>(allocations[p_as_int]);
+        if (allocations.find(p) != allocations.end()) {
+            real_ptr = reinterpret_cast<void*>(allocations[p]);
         }
         if (real_ptr) {
             hipFree(real_ptr);
@@ -217,22 +239,11 @@ int step_event(event_t replay_event)
     timers.push_back(std::pair<hipEvent_t, hipEvent_t>(start, finish));
 }
 
-int run_all_events(/* runner monitor */)
-{
-
-}
-
-int edit_binary()
-{
-
-}
-
-
 __attribute__((constructor)) void replay_init()
 {
     char* db_filename = std::getenv("HIPTRACER_EVENTDB");
     if (db_filename == NULL) {
-        db_filename = "tracer-default.sqlite";
+        db_filename = "tracer-default.db";
     }
  
     std::printf("db: %s\n", db_filename);
@@ -248,21 +259,6 @@ __attribute__((destructor)) void replay_destroy()
 {
     sqlite3_close(g_event_db);
     sqlite3_close(g_results_db);
-}
-
-int sql_callback(void *NotUsed, int argc, char **argv, 
-                    char **azColName)
-{
-    NotUsed = 0;
-
-    for (int i = 0; i < argc; i++) {
-
-        printf("%s = %s\n", azColName[i], argv[i] ? argv[i] : "NULL");
-    }
-
-    printf("\n");
-
-    return 0;
 }
 
 int main()
