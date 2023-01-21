@@ -63,8 +63,8 @@ int get_memcpy(int event_id, uintptr_t& dst, uintptr_t& src, size_t& size, hipMe
         std::printf("Failed to get launch %s\n", sqlite3_errmsg(g_event_db));
     }
  
-    dst = sqlite3_column_int(pStmt, 0);
-    src = sqlite3_column_int(pStmt, 1);
+    dst = sqlite3_column_int64(pStmt, 0);
+    src = sqlite3_column_int64(pStmt, 1);
     size = sqlite3_column_int(pStmt, 2);
     kind = (hipMemcpyKind) sqlite3_column_int(pStmt, 3);
     if (kind == hipMemcpyHostToDevice) {
@@ -89,7 +89,7 @@ int get_malloc(int event_id, uintptr_t& p, size_t& size)
         std::printf("Failed to get launch %s\n", sqlite3_errmsg(g_event_db));
     }
  
-    p = sqlite3_column_int(pStmt, 0);
+    p = sqlite3_column_int64(pStmt, 0);
     size = sqlite3_column_int(pStmt, 1);
 
     return rc;

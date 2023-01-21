@@ -14,73 +14,42 @@ typedef enum HIP_EVENT {
     EVENT_LAUNCH
 } HIP_EVENT;
 
-typedef struct event_t {
+typedef struct gputrace_event {
     uint64_t id;
-    std::string name;
-    int stream;
+    const char* name;
+    hipResult_t rc;
+    hipStream_t stream;
 
     HIP_EVENT type;
+    std::variant<gputrace_event_malloc,
+                 gputrace_event_memcpy,
+                 gputrace_event_free,
+                 gputrace_event_launch> data; // FIXME Just a union - Will always be the largest
+} gputrace_event;
 
-    uint64_t offset;
-    uint64_t size;
-} event_t;
+typedef struct gputrace_event_malloc {
+    void* p;
+    size_t size;
+} gputrace_event_malloc;
 
-typedef struct header_t {
-    uint64_t magic;
-    uint64_t num_events;
-    uint64_t code_offset;
-    uint64_t code_size;
-} header_t; 
+typedef struct gputrace_event_memcpy {
+    void* dst;
+    void* src;
+    size_t size;
+    hipMemcpyKind kind;
+    std::vector<std::byte> hostdata;
+} gputrace_event_memcpy;
 
-typedef struct data_t {
-    std::vector<std::byte> bytes;
-    uint64_t size;
-} data_t;
+typedef struct gputrace_event_free {
+    void* p;
+} gputrace_event_free;
 
-class Trace {
-private:
-    std::FILE* events_fp = nullptr;
-public:
-    std::FILE* data_fp = nullptr;
-    header_t header;
-    std::vector<event_t> events;
-
-    std::vector<data_t> chunks;
-
-    enum OPEN_STATUS { 
-        OPEN_SUCCESS = 1,
-        OPEN_FAILURE = 0,
-    };
-    OPEN_STATUS open(std::string filename) { 
-        std::string events_filename = filename + ".events";
-        std::string data_filename = filename + ".data";
-        events_fp = std::fopen(events_filename.c_str(), "rb");
-        data_fp = std::fopen(data_filename.c_str(), "rb");
-    
-        if (events_fp == nullptr) {
-            std::fprintf(stderr, "Unable to open events file\n");
-            return OPEN_FAILURE;
-        }
-        if (data_fp == nullptr) {
-            std::fprintf(stderr, "Unable to open data file\n");
-            return OPEN_FAILURE;
-        }
-
-        // Read file header to verify
-        std::fread(&header, sizeof(header_t), 1, events_fp);
-        if (header.magic != 0xDEADBEEF) {
-            std::fprintf(stderr, "Invalid or corrupt trace file\n");
-            return OPEN_FAILURE;
-        }
-
-        std::printf("magic: %lx\n", header.magic);
-        std::printf("num events: %lu\n", header.num_events); 
-
-        events.resize(header.num_events);
-        std::fread(events.data(), sizeof(events[0]), header.num_events, events_fp);
-
-        return OPEN_SUCCESS;
-    }
-};
+typedef struct gputrace_event_launch {
+    const char* kernel_name;
+    dim3 num_blocks;
+    dim3 dim_blocks;
+    int shared_mem_bytes;
+    std::vector<std::byte> argdata;
+} gputrace_event_launch;
 
 #endif // __HIP_TRACE_H__
