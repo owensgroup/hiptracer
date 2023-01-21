@@ -4,7 +4,6 @@
 
 #include "hip/hip_runtime.h"
 
-// header_t, event_t
 #include "trace.h"
 
 // ArgInfo, getArgInfo
@@ -22,10 +21,6 @@ std::unordered_map<uintptr_t, uintptr_t> allocations;
 std::unordered_map<uintptr_t, std::vector<std::byte>> host_buffers;
 
 std::vector<std::pair<hipEvent_t, hipEvent_t>> timers;
-
-uint64_t gPageSize = 4096;
-
-Trace trace;
 
 uintptr_t getReplayPointer(uintptr_t p) 
 {
@@ -45,7 +40,7 @@ int get_free(int event_id, uintptr_t& p)
         std::printf("Failed to get launch %s\n", sqlite3_errmsg(g_event_db));
     }
  
-    p = sqlite3_column_int(pStmt, 0);
+    p = sqlite3_column_int64(pStmt, 0);
 
     return rc;
 }
@@ -135,7 +130,7 @@ int get_launch(int event_id, hipStream_t& stream, std::string& kernel_name, dim3
     return rc;
 }
 
-int step_event(event_t replay_event)
+int step_event(gputrace_event replay_event)
 {
     std::printf("%s\n", replay_event.name.c_str());
     hipEvent_t start;
@@ -346,7 +341,7 @@ int main()
 {   
     char* line = NULL;
     int curr_event = 0;
-    std::vector<event_t> events;
+    std::vector<gputrace_event> events;
 
     while((line = readline("command > ")) != NULL) {
         if (line[0] == 'r') { // RUN
@@ -355,7 +350,7 @@ int main()
             sqlite3_prepare_v2(g_event_db, events_sql, -1, &pStmt, 0);
 
             while (sqlite3_step(pStmt) == SQLITE_ROW) {
-                event_t event;
+                gputrace_event event;
                 event.id = sqlite3_column_int(pStmt, 0);
                 event.name = std::string((char*)sqlite3_column_text(pStmt, 1));
                 event.type = (HIP_EVENT) sqlite3_column_int(pStmt, 2);
@@ -399,7 +394,7 @@ int main()
         }
 
         if (line[0] == 's') { // STEP
-            event_t replay_event = events[curr_event];
+            gputrace_event replay_event = events[curr_event];
             step_event(replay_event);
         }
     }

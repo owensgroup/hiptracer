@@ -21,13 +21,18 @@
 #include <hip/hip_runtime.h>
 
 #include "sqlite3.h"
-#include "lock_free_buffer_queue.h" // Goog lock-free-buffer-queue
+
 #include "callbacks.h"
+
+#include "progressbar.h"
+#include "atomic_queue/atomic_queue.h"
+#define MAX_ELEMS 1024
+atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
 
 bool REPLAY = false;
 bool DEBUG = false;
 bool REWRITE = false;
-char* EVENTDB = NULL;
+const char* EVENTDB = NULL;
 
 int g_curr_event = 0;
 sqlite3 *g_event_db = NULL;
@@ -35,11 +40,14 @@ std::string g_codeobj_filename = "hipv4-amdgcn-amd-amdhsa--gfx908.code";
 
 void* rocmLibHandle = NULL;
 
-#define MAX_ELEMS 256
-lock_free_buffer_queue<gputrace_event> events_queue(MAX_ELEMS);
-std::thread* db_writer_thread;
+std::thread* db_writer_thread = NULL;
+
+std::mutex mx;
+std::unique_lock<std::mutex> lock(mx);
 std::condition_variable events_available;
 bool g_library_loaded = true;
+
+void prepare_events();
 
 __attribute__((constructor)) void hiptracer_init()
 {
@@ -83,12 +91,7 @@ __attribute__((constructor)) void hiptracer_init()
     }
 
     g_library_loaded = true;
-    std::thread db_writer_thread(prepare_events);
-}
-
-void complete_sql_stmt(sqlite3_stmt* pStmt) {
-    sqlite3_step(pStmt);
-    sqlite3_finalize(pStmt);
+    db_writer_thread = new std::thread(prepare_events);
 }
 
 __attribute__((destructor)) void hiptracer_deinit()
@@ -97,6 +100,10 @@ __attribute__((destructor)) void hiptracer_deinit()
     events_available.notify_all();
   
     sqlite3_close(g_event_db);
+
+    if (db_writer_thread != NULL) {
+        (*db_writer_thread).join();
+    }
 }
 
 std::vector<std::byte> compress_data(void *data, size_t size)
@@ -110,71 +117,104 @@ std::vector<std::byte> compress_data(void *data, size_t size)
     return compressed;
 }
 
-int insert_free(gputrace_event_free event, sqlite3_stmt* pStmt)
+int insert_free(gputrace_event event, sqlite3_stmt* pStmt)
 {
-    int rc = sqlite3_bind_int(pStmt, 1, event_id);
-    rc = sqlite3_bind_int(pStmt, 2, (uintptr_t) stream);
-    rc = sqlite3_bind_int64(pStmt, 3, (uintptr_t) p);
+    int rc = sqlite3_bind_int(pStmt, 1, event.id);
+    rc = sqlite3_bind_int(pStmt, 2, (uintptr_t) event.stream);
+
+    gputrace_event_free free_event = std::get<gputrace_event_free>(event.data);
+    rc = sqlite3_bind_int64(pStmt, 3, (uintptr_t) free_event.p);
 
     rc = sqlite3_step(pStmt);
+    sqlite3_reset(pStmt);
+    sqlite3_clear_bindings(pStmt);
     return rc;
 }
 
-int insert_launch(gputrace_event_launch event, sqlite3_stmt* pStmt)
+int insert_launch(gputrace_event event, sqlite3_stmt* pStmt)
 {
+    gputrace_event_launch launch_event = std::get<gputrace_event_launch>(event.data);
+
     int rc = sqlite3_bind_int(pStmt, 1, event.id);
     rc = sqlite3_bind_int(pStmt, 2, (uint64_t) event.stream);
-    rc = sqlite3_bind_text(pStmt, 3, event.kernel_name, -1, SQLITE_TRANSIENT);
-    rc = sqlite3_bind_int(pStmt, 4, event.num_blocks.x);
-    rc = sqlite3_bind_int(pStmt, 5, event.num_blocks.y);
-    rc = sqlite3_bind_int(pStmt, 6, event.num_blocks.z);
-    rc = sqlite3_bind_int(pStmt, 7, event.dim_blocks.x);
-    rc = sqlite3_bind_int(pStmt, 8, event.dim_blocks.y);
-    rc = sqlite3_bind_int(pStmt, 9, event.dim_blocks.z);
-    rc = sqlite3_bind_int(pStmt, 10, event.shared_mem_bytes);
-    rc = sqlite3_bind_blob(pStmt, 11, event.arg_data.data(), event.arg_data.size(), SQLITE_TRANSIENT);
+    rc = sqlite3_bind_text(pStmt, 3, launch_event.kernel_name, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_bind_int(pStmt, 4, launch_event.num_blocks.x);
+    rc = sqlite3_bind_int(pStmt, 5, launch_event.num_blocks.y);
+    rc = sqlite3_bind_int(pStmt, 6, launch_event.num_blocks.z);
+    rc = sqlite3_bind_int(pStmt, 7, launch_event.dim_blocks.x);
+    rc = sqlite3_bind_int(pStmt, 8, launch_event.dim_blocks.y);
+    rc = sqlite3_bind_int(pStmt, 9, launch_event.dim_blocks.z);
+    rc = sqlite3_bind_int(pStmt, 10, launch_event.shared_mem_bytes);
+    rc = sqlite3_bind_blob(pStmt, 11, launch_event.argdata.data(), launch_event.argdata.size(), SQLITE_TRANSIENT);
 
     rc = sqlite3_step(pStmt);
+    sqlite3_reset(pStmt);
+    sqlite3_clear_bindings(pStmt);
     return rc;
 }
 
-int insert_malloc(gputrace_event_malloc event, sqlite3_stmt* pStmt)
+int insert_malloc(gputrace_event event, sqlite3_stmt* pStmt)
 {
+    gputrace_event_malloc malloc_event = std::get<gputrace_event_malloc>(event.data);
+
+    std::printf("inserting p %d\n", malloc_event.p);
     int rc = sqlite3_bind_int(pStmt, 1, event.id);
     rc = sqlite3_bind_int(pStmt, 2, (uint64_t) event.stream);
-    rc = sqlite3_bind_int64(pStmt, 3, event.p);
-    rc = sqlite3_bind_int(pStmt, 4, event.size);
+    rc = sqlite3_bind_int64(pStmt, 3, (uint64_t) malloc_event.p);
+    rc = sqlite3_bind_int(pStmt, 4, malloc_event.size);
+ 
 
     rc = sqlite3_step(pStmt);
+
+    sqlite3_reset(pStmt);
+
+    if (rc != SQLITE_DONE) {
+        std::printf("ERROR? %s\n", sqlite3_errmsg(g_event_db));
+    }
+    sqlite3_clear_bindings(pStmt);
     return rc;
 }
 
-int insert_memcpy(gputrace_event_memcpy event, sqlite3_stmt* pStmt)
+int insert_memcpy(gputrace_event event, sqlite3_stmt* pStmt)
 {
-    int rc = sqlite3_bind_int(pStmt, 1, event.id);
-    rc = sqlite3_bind_int(pStmt, 2, (uint64_t) event.stream);
-    rc = sqlite3_bind_int64(pStmt, 3, (uint64_t) event.dst);
-    rc = sqlite3_bind_int64(pStmt, 4, (uint64_t) event.src);
-    rc = sqlite3_bind_int(pStmt, 5, event.size);
-    rc = sqlite3_bind_int(pStmt, 6, event.kind);
+    gputrace_event_memcpy memcpy_event = std::get<gputrace_event_memcpy>(event.data);
 
-    if (kind == hipMemcpyHostToDevice) {
-        rc = sqlite3_bind_blob(pStmt, 7, event.hostdata.data(), event.hostdata.size(), SQLITE_TRANSIENT);
+    int rc = sqlite3_bind_int(pStmt, 1, event.id);
+
+    rc = sqlite3_bind_int(pStmt, 2, (uint64_t) event.stream);
+
+
+    rc = sqlite3_bind_int64(pStmt, 3, (uint64_t) memcpy_event.dst);
+    rc = sqlite3_bind_int64(pStmt, 4, (uint64_t) memcpy_event.src);
+    rc = sqlite3_bind_int(pStmt, 5, memcpy_event.size);
+
+    rc = sqlite3_bind_int(pStmt, 6, memcpy_event.kind);
+
+    if (memcpy_event.kind == hipMemcpyHostToDevice) {
+        rc = sqlite3_bind_blob(pStmt, 7, memcpy_event.hostdata.data(), memcpy_event.hostdata.size(), SQLITE_TRANSIENT);
     }
 
     rc = sqlite3_step(pStmt);
+
+    sqlite3_reset(pStmt);
+    sqlite3_clear_bindings(pStmt);
     return rc;
 }
 
-int insert_event(gputrace_event, sqlite3_stmt* pStmt)
+int insert_event(gputrace_event event, sqlite3_stmt* pStmt)
 {
     int rc = sqlite3_bind_int(pStmt, 1, event.type);
-    rc = sqlite3_bind_text(pStmt, 2, event.name.c_str(), -1, SQLITE_TRANSIENT);
+    rc = sqlite3_bind_text(pStmt, 2, event.name, -1, SQLITE_TRANSIENT);
     rc = sqlite3_bind_int(pStmt, 3, event.rc);
     rc = sqlite3_bind_int(pStmt, 4, (uint64_t) event.stream);
     rc = sqlite3_bind_int(pStmt, 5, event.id);
 
     rc = sqlite3_step(pStmt);
+    if (rc != SQLITE_DONE) {
+        std::printf("Not able to insert event %s\n", sqlite3_errmsg(g_event_db));
+    }
+    sqlite3_reset(pStmt);
+    sqlite3_clear_bindings(pStmt);
     return rc;
 }
 
@@ -193,34 +233,43 @@ void prepare_events()
                             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     const char* freeSql = "INSERT INTO EventFree(Id, Stream, Ptr) VALUES(?, ?, ?);";
 
-    sqlite3_prepare_v2(g_event_db, sql, -1, &eventStmt, 0);
-    sqlite3_prepare_v2(g_event_db, sql, -1, &mallocStmt, 0);
-    sqlite3_prepare_v2(g_event_db, sql, -1, &memcpyStmt, 0);
-    sqlite3_prepare_v2(g_event_db, sql, -1, &freeStmt, 0);
-    sqlite3_prepare_v2(g_event_db, sql, -1, &launchStmt, 0);
+    sqlite3_prepare_v2(g_event_db, eventSql, -1, &eventStmt, 0);
+    sqlite3_prepare_v2(g_event_db, memcpySql, -1, &memcpyStmt, 0);
+    sqlite3_prepare_v2(g_event_db, mallocSql, -1, &mallocStmt, 0);
+    sqlite3_prepare_v2(g_event_db, launchSql, -1, &launchStmt, 0);
+    sqlite3_prepare_v2(g_event_db, freeSql, -1, &freeStmt, 0);
 
+	progressbar* progress = NULL;
     while(g_library_loaded) {
-        while(!events_queue.is_empty()) {      
-            gputrace_event event = events_queue.try_pop();
-            insert_event(event, eventStmt);
-            if (event.type == EVENT_MALLOC) {
-                gputrace_event_malloc subevent = std::get<gputrace_event_malloc>(event.data);
-                insert_malloc(subevent, mallocStmt);
-            } else if (event.type == EVENT_MEMCPY) {
-                gputrace_event_memcpy subevent = std::get<gputrace_event_memcpy>(event.data);
-                insert_memcpy(subevent, memcpyStmt);
-            } else if (event.type == EVENT_FREE) {
-                gputrace_event_free subevent = std::get<gputrace_event_free>(event.data);
-                insert_free(subevent, freeStmt);
-            } else if (event.type == EVENT_LAUNCH) {
-                gputrace_event_launch subevent = std::get<gputrace_event_launch>(event.data);
-                insert_launch(subevent, launchStmt);
+        while(!events_queue.was_empty()) {      
+            if (!g_library_loaded && progress == NULL) {
+                // Display progress of remaining statements
+                size_t events_remaining = events_queue.was_size();
+				progress = new progressbar(events_remaining);
             }
+            gputrace_event event;
+            events_queue.try_pop(event);
+
+            insert_event(event, eventStmt);
+            if (event.type == EVENT_MALLOC) { 
+                insert_malloc(event, mallocStmt);
+            } else if (event.type == EVENT_MEMCPY) {
+                insert_memcpy(event, memcpyStmt);
+            } else if (event.type == EVENT_FREE) {
+                insert_free(event, freeStmt);
+            } else if (event.type == EVENT_LAUNCH) {
+                insert_launch(event, launchStmt);
+            }
+			if (progress != NULL) {
+				progress->update();
+			}
         }
-        if (g_library_loaded) {
-            events_available.wait();
+        if (events_queue.was_empty() && g_library_loaded) {
+            events_available.wait(lock);
         }
     }
+	delete progress;
+	std::printf("\nCAPTURE COMPLETE\n");
 
     sqlite3_finalize(eventStmt);
     sqlite3_finalize(mallocStmt);
@@ -229,13 +278,13 @@ void prepare_events()
     sqlite3_finalize(launchStmt);
 }
 
-void pushback_event(gputrace_event)
+void pushback_event(gputrace_event event)
 {
-    if (events_queue.is_full()) {
+    if (events_queue.was_full()) {
         std::printf("Unable to add event, event queue full\nUse a larger buffer size or allocate more threads for event insertion\n");
         std::exit(-1);
     } else {
-        events_queue.nonblocking_push(gputrace_event);
+        events_queue.push(event);
         events_available.notify_one();
     }
 }
@@ -289,7 +338,9 @@ hipError_t hipFree(void *p)
     event.name = __func__;
     event.rc = result;
     event.stream = hipStreamDefault;
-    free_event.p = p;
+    event.type = EVENT_FREE;
+
+    free_event.p = (uint64_t) p;
 
     event.data = free_event;
     pushback_event(event);
@@ -303,8 +354,6 @@ hipError_t hipFree(void *p)
 
 hipError_t hipMalloc(void** p, size_t size)
 {
-    g_curr_event++;
-
     if (hipMalloc_fptr == NULL) {
         hipMalloc_fptr = (hipError_t (*) (void**, size_t)) dlsym(rocmLibHandle, "hipMalloc");
     }
@@ -333,9 +382,11 @@ hipError_t hipMalloc(void** p, size_t size)
     if (p == NULL) {
         malloc_event.p = NULL;
     } else {
-        malloc_event.p = *p;
+        malloc_event.p = (uint64_t) *p;
     }
     malloc_event.size = size;
+
+    event.data = malloc_event;
 
     pushback_event(event);
 
@@ -364,9 +415,11 @@ hipError_t hipMemcpy(void *dst, const void *src, size_t size, hipMemcpyKind kind
     event.name = __func__;
     event.rc = result;
     event.stream = hipStreamDefault;
+    event.type = EVENT_MEMCPY;
 
-    memcpy_event.dst = dst;
-    memcpy_event.src = src;
+    memcpy_event.dst = (uint64_t) dst;
+    memcpy_event.src = (uint64_t) src;
+	std::printf("dst %d src %d\n", memcpy_event.dst, memcpy_event.src);
     memcpy_event.size = size;
     memcpy_event.kind = kind;
     if (memcpy_event.kind == hipMemcpyHostToDevice) {
@@ -376,7 +429,7 @@ hipError_t hipMemcpy(void *dst, const void *src, size_t size, hipMemcpyKind kind
 
     event.data = std::move(memcpy_event);
 
-    pushback_event(gputrace_event);
+    pushback_event(event);
 
     if (DEBUG) {
         printf("[%d] \t result: %d\n", g_curr_event, result);
@@ -386,8 +439,6 @@ hipError_t hipMemcpy(void *dst, const void *src, size_t size, hipMemcpyKind kind
 
 hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
 {
-    g_curr_event++;
-
     if (hipGetDeviceProperties_fptr == NULL) {
         hipGetDeviceProperties_fptr = (hipError_t (*) (hipDeviceProp_t*, int)) dlsym(rocmLibHandle, "hipGetDeviceProperties");
     }
@@ -401,21 +452,14 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
 
     hipError_t result = (*hipGetDeviceProperties_fptr)(p_prop, device);
 
-    insert_event(EVENT_DEVICE, (char*)__func__, (int) result, hipStreamDefault, g_curr_event);
+    gputrace_event event;
+    event.id = g_curr_event++;
+    event.name = __func__;
+    event.rc = result;
+    event.stream = hipStreamDefault;
+    event.type = EVENT_DEVICE;
 
-    return result;
-}
-
-hipError_t hipSetupArgument(const void * arg, size_t size, size_t offset)
-{
-     g_curr_event++;
-
-    if (hipSetupArgument_fptr == NULL) {
-        hipSetupArgument_fptr = ( hipError_t (*) (const void*, size_t size, size_t offset)) dlsym(rocmLibHandle, "hipSetupArgument");
-    } 
-    
-    hipError_t result = (hipSetupArgument_fptr)(arg, size, offset);
-    insert_event(EVENT_DEVICE, (char*)__func__, (int) result, hipStreamDefault, g_curr_event);
+    pushback_event(event);
 
     return result;
 }
@@ -427,8 +471,6 @@ hipError_t hipLaunchKernel(const void* function_address,
         size_t sharedMemBytes ,
         hipStream_t stream)
 {
-    g_curr_event++;
-
     if (hipLaunchKernel_fptr == NULL) {
         hipLaunchKernel_fptr = ( hipError_t (*) (const void*, dim3, dim3, void**, size_t, hipStream_t)) dlsym(rocmLibHandle, "hipLaunchKernel");
     } 
@@ -448,7 +490,7 @@ hipError_t hipLaunchKernel(const void* function_address,
         hipModuleGetFunction_fptr = ( hipError_t (*) (hipFunction_t*, hipModule_t, const char*)) dlsym(rocmLibHandle, "hipModuleGetFunction");
     }
 
-    std::string kernel_name((*hipKernelNameRefByPtr_fptr)(function_address, stream));
+    const char* kernel_name = (*hipKernelNameRefByPtr_fptr)(function_address, stream);
     
     std::vector<ArgInfo> arg_infos = getArgInfo(g_codeobj_filename.c_str());
 
@@ -465,7 +507,7 @@ hipError_t hipLaunchKernel(const void* function_address,
 
     if (DEBUG) {
         printf("[%d] hooked: hipLaunchKernel\n", g_curr_event);
-        printf("[%d] \t kernel_name: %s\n", g_curr_event, kernel_name.c_str());
+        printf("[%d] \t kernel_name: %s\n", g_curr_event, kernel_name);
         printf("[%d] \t function_address: %lx\n", g_curr_event, (uint64_t) function_address);
         printf("[%d] \t numBlocks: %d %d %d\n", g_curr_event, numBlocks.x, numBlocks.y, numBlocks.z);
         printf("[%d] \t dimBlocks: %d %d %d\n", g_curr_event, dimBlocks.x, dimBlocks.y, dimBlocks.z);
@@ -475,8 +517,25 @@ hipError_t hipLaunchKernel(const void* function_address,
     }
 
     hipError_t result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
-    insert_event(EVENT_LAUNCH, (char*)__func__, (int) result, stream, g_curr_event);
-    insert_launch(g_curr_event, stream, kernel_name, numBlocks, dimBlocks, sharedMemBytes, arg_data.data(), arg_data.size());
+
+    gputrace_event event;
+    gputrace_event_launch launch_event;
+
+    event.id = g_curr_event++;
+    event.name = __func__;
+    event.rc = result;
+    event.stream = stream;
+    event.type = EVENT_LAUNCH;
+
+
+    launch_event.kernel_name = kernel_name;
+    launch_event.num_blocks = numBlocks;
+    launch_event.dim_blocks = dimBlocks;
+    launch_event.shared_mem_bytes = sharedMemBytes;
+    launch_event.argdata = arg_data;
+
+    event.data = std::move(launch_event);
+    pushback_event(event);
 
     return result;
 }
@@ -503,7 +562,7 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
         hipKernelNameRef_fptr = ( const char* (*) (const hipFunction_t)) dlsym(rocmLibHandle, "hipKernelNameRef");
     }
 
-    std::string kernel_name((*hipKernelNameRef_fptr)(f));
+    const char* kernel_name = (*hipKernelNameRef_fptr)(f);
 
     std::vector<ArgInfo> arg_infos = getArgInfo(g_codeobj_filename.c_str());
 
@@ -524,8 +583,25 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
 
     dim3 numBlocks = { gridDimX, gridDimY, gridDimZ };
     dim3 dimBlocks = { blockDimX, blockDimY, blockDimZ };
-    insert_event(EVENT_LAUNCH, (char*)__func__, (int) result, stream, g_curr_event);
-    insert_launch(g_curr_event, stream, kernel_name.c_str(), numBlocks, dimBlocks, sharedMemBytes, arg_data.data(), arg_data.size());
+
+    gputrace_event event;
+    gputrace_event_launch launch_event;
+
+    event.id = g_curr_event++;
+    event.name = __func__;
+    event.rc = result;
+    event.stream = stream;
+    event.type = EVENT_LAUNCH;
+
+
+    launch_event.kernel_name = kernel_name;
+    launch_event.num_blocks = numBlocks;
+    launch_event.dim_blocks = dimBlocks;
+    launch_event.shared_mem_bytes = sharedMemBytes;
+    launch_event.argdata = arg_data;
+
+    event.data = std::move(launch_event);
+    pushback_event(event);
 
     return result;
 }
