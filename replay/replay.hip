@@ -22,6 +22,14 @@ std::unordered_map<uintptr_t, std::vector<std::byte>> host_buffers;
 
 std::vector<std::pair<hipEvent_t, hipEvent_t>> timers;
 
+std::vector<const char*> event_names = {
+    "hipMalloc",
+    "hipMemcpy",
+    "hipGetDeviceProperties",
+    "hipFree",
+    "hipLaunchKernel"
+};
+
 uintptr_t getReplayPointer(uintptr_t p) 
 {
     return allocations[(uintptr_t)p];
@@ -127,12 +135,14 @@ int get_launch(int event_id, hipStream_t& stream, std::string& kernel_name, dim3
     const void * blob = sqlite3_column_blob(pStmt, 9);
     std::memcpy(arg_data.data(), blob, args_size);
 
+    std::printf("arg_data[0]:%d\n", arg_data[0]);
+
     return rc;
 }
 
 int step_event(gputrace_event replay_event)
 {
-    std::printf("%s\n", replay_event.name.c_str());
+    std::printf("%s\n", replay_event.name);
     hipEvent_t start;
     hipEvent_t finish;
     hipEventCreate(&start);
@@ -181,9 +191,6 @@ int step_event(gputrace_event replay_event)
     } else if (replay_event.type == EVENT_LAUNCH) {
         std::printf("\thipLaunchKernel\n");
 
-        std::printf("event size %lu\n", replay_event.size);
-        std::printf("Reading from offset %lu\n", replay_event.offset);
-
         std::string kernel_name;
         dim3 numBlocks;
         dim3 dimBlocks;
@@ -197,6 +204,8 @@ int step_event(gputrace_event replay_event)
         std::printf("\tsharedMemBytes %d\n", sharedMemBytes);
         std::printf("\tkernel_name %s\n", kernel_name.c_str());
         std::printf("\t args size (in bytes) %d\n", args.size());
+
+        std::printf("args[8]%d\n", args[8]);
 
         std::printf("\tGetting arg info from code object\n");
         uint64_t total_argsize = 0;
@@ -217,12 +226,14 @@ int step_event(gputrace_event replay_event)
                 auto offset = arg_infos[i].offset;
                 std::memcpy(&value, args.data() + offset, size);
 
-                std::printf("Looking for %d\n", value);
+                std::printf("OFFSET %d\n", offset);
+
+                std::printf("Looking for %px\n", value);
 
                 auto ptr_it = allocations.find(value);
                 if (ptr_it != allocations.end()) {
                     uintptr_t replay_value = ptr_it->second;
-                    std::printf("Actual value %p\n", replay_value);
+                    std::printf("Actual value %px\n", replay_value);
                     std::memcpy(args.data() + offset, &replay_value, size); 
                 } else {
                     std::printf("Unable to find allocation\n");
@@ -308,10 +319,9 @@ int step_event(gputrace_event replay_event)
         // Unhandled event type
         std::printf("Error: Event UNHANDLED\n");
     }
-    /* ****** */
-    //hipEventRecord(finish, (hipStream_t) replay_event.stream);
+    hipEventRecord(finish, hipStreamDefault);
 
-    //timers.push_back(std::pair<hipEvent_t, hipEvent_t>(start, finish));
+    timers.push_back(std::pair<hipEvent_t, hipEvent_t>(start, finish));
     return 0;
 }
 
@@ -352,7 +362,14 @@ int main()
             while (sqlite3_step(pStmt) == SQLITE_ROW) {
                 gputrace_event event;
                 event.id = sqlite3_column_int(pStmt, 0);
-                event.name = std::string((char*)sqlite3_column_text(pStmt, 1));
+                event.name = NULL;
+                std::string name((char*)sqlite3_column_text(pStmt, 1));
+                for(int i = 0; i < event_names.size(); i++) {
+                    if (event_names[i] == name) {
+                        event.name = event_names[i];
+                    }
+                }
+
                 event.type = (HIP_EVENT) sqlite3_column_int(pStmt, 2);
 
                 events.push_back(event);
@@ -363,7 +380,7 @@ int main()
             // Iterate over events
             for (; curr_event < events.size(); curr_event++)
             {
-                event_t replay_event = events[curr_event];
+                gputrace_event replay_event = events[curr_event];
                 step_event(replay_event);
             }
 
@@ -372,9 +389,10 @@ int main()
             sqlite3_exec(g_results_db, sql, 0, 0, NULL);
 
             pStmt = NULL;
+            std::printf("NUM TIMERS %d\n", timers.size());
             for (int i = 0; i < timers.size(); i++) {
                 float elapsed = 0;
-                event_t event = events[i];
+                gputrace_event event = events[i];
                 auto timer = timers[i];
                 hipEventSynchronize(timer.second);
                 hipEventElapsedTime(&elapsed, timer.first, timer.second);
@@ -387,10 +405,8 @@ int main()
 
                 sqlite3_step(pStmt);
                 sqlite3_finalize(pStmt); // FIXME
-                std::printf("\t Event ID: %d\t Elapsed: %f\t Name: %s\t Stream: %d\t \n", event.id, elapsed, event.name.c_str(), event.stream);
+                std::printf("\t Event ID: %d\t Elapsed: %f\t Name: %s\t Stream: %d\t \n", event.id, elapsed, event.name, event.stream);
             }
-            
-            return 0;
         }
 
         if (line[0] == 's') { // STEP

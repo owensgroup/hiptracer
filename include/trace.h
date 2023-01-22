@@ -36,7 +36,7 @@ typedef struct gputrace_event_free {
 } gputrace_event_free;
 
 typedef struct gputrace_event_launch {
-    const char* kernel_name;
+    std::string kernel_name;
     dim3 num_blocks;
     dim3 dim_blocks;
     int shared_mem_bytes;

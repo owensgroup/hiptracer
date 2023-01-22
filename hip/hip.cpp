@@ -22,11 +22,9 @@
 
 #include "sqlite3.h"
 
-#include "callbacks.h"
-
 #include "progressbar.h"
 #include "atomic_queue/atomic_queue.h"
-#define MAX_ELEMS 1024
+#define MAX_ELEMS 512
 atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
 
 bool REPLAY = false;
@@ -73,6 +71,7 @@ __attribute__((constructor)) void hiptracer_init()
         std::exit(-1);
     }
     
+
     const char* create_events_sql = "DROP TABLE IF EXISTS Events;"
                               "DROP TABLE IF EXISTS EventMalloc;"
                               "DROP TABLE IF EXISTS EventMemcpy;"
@@ -137,7 +136,7 @@ int insert_launch(gputrace_event event, sqlite3_stmt* pStmt)
 
     int rc = sqlite3_bind_int(pStmt, 1, event.id);
     rc = sqlite3_bind_int(pStmt, 2, (uint64_t) event.stream);
-    rc = sqlite3_bind_text(pStmt, 3, launch_event.kernel_name, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_bind_text(pStmt, 3, launch_event.kernel_name.c_str(), -1, SQLITE_TRANSIENT);
     rc = sqlite3_bind_int(pStmt, 4, launch_event.num_blocks.x);
     rc = sqlite3_bind_int(pStmt, 5, launch_event.num_blocks.y);
     rc = sqlite3_bind_int(pStmt, 6, launch_event.num_blocks.z);
@@ -145,7 +144,10 @@ int insert_launch(gputrace_event event, sqlite3_stmt* pStmt)
     rc = sqlite3_bind_int(pStmt, 8, launch_event.dim_blocks.y);
     rc = sqlite3_bind_int(pStmt, 9, launch_event.dim_blocks.z);
     rc = sqlite3_bind_int(pStmt, 10, launch_event.shared_mem_bytes);
+
+    std::printf("argdata at 8: %d\n", launch_event.argdata[8]);
     rc = sqlite3_bind_blob(pStmt, 11, launch_event.argdata.data(), launch_event.argdata.size(), SQLITE_TRANSIENT);
+
 
     rc = sqlite3_step(pStmt);
     sqlite3_reset(pStmt);
@@ -335,7 +337,7 @@ hipError_t hipFree(void *p)
     gputrace_event_free free_event;
 
     event.id = g_curr_event++;
-    event.name = __func__;
+    event.name = "hipFree";
     event.rc = result;
     event.stream = hipStreamDefault;
     event.type = EVENT_FREE;
@@ -376,7 +378,7 @@ hipError_t hipMalloc(void** p, size_t size)
     gputrace_event_malloc malloc_event;
     event.id = g_curr_event++;
     event.type = EVENT_MALLOC;
-    event.name = __func__;
+    event.name = "hipMalloc";
     event.rc = result;
     event.stream = hipStreamDefault;
     if (p == NULL) {
@@ -412,7 +414,7 @@ hipError_t hipMemcpy(void *dst, const void *src, size_t size, hipMemcpyKind kind
     gputrace_event event;
     gputrace_event_memcpy memcpy_event;
     event.id = g_curr_event++;
-    event.name = __func__;
+    event.name = "hipMemcpy";
     event.rc = result;
     event.stream = hipStreamDefault;
     event.type = EVENT_MEMCPY;
@@ -454,7 +456,7 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
 
     gputrace_event event;
     event.id = g_curr_event++;
-    event.name = __func__;
+    event.name = "hipGetDeviceProperties";
     event.rc = result;
     event.stream = hipStreamDefault;
     event.type = EVENT_DEVICE;
@@ -490,7 +492,7 @@ hipError_t hipLaunchKernel(const void* function_address,
         hipModuleGetFunction_fptr = ( hipError_t (*) (hipFunction_t*, hipModule_t, const char*)) dlsym(rocmLibHandle, "hipModuleGetFunction");
     }
 
-    const char* kernel_name = (*hipKernelNameRefByPtr_fptr)(function_address, stream);
+    std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
     
     std::vector<ArgInfo> arg_infos = getArgInfo(g_codeobj_filename.c_str());
 
@@ -502,12 +504,18 @@ hipError_t hipLaunchKernel(const void* function_address,
     std::vector<std::byte> arg_data(total_size);
 
     for(int i = 0; i < arg_infos.size(); i++) {
-        std::memcpy(arg_data.data() + arg_infos[i].offset, args + arg_infos[i].offset, arg_infos[i].size);
+        std::printf("offset: %d\n", arg_infos[i].offset);
+        std::printf("adding %d\n", arg_infos[i].size);
+        std::memcpy(arg_data.data() + arg_infos[i].offset, args[i], arg_infos[i].size);
+    }
+
+    for (int i = 0; i < total_size; i++) {
+        std::printf("DATA:%px\n", arg_data[i]);
     }
 
     if (DEBUG) {
         printf("[%d] hooked: hipLaunchKernel\n", g_curr_event);
-        printf("[%d] \t kernel_name: %s\n", g_curr_event, kernel_name);
+        printf("[%d] \t kernel_name: %s\n", g_curr_event, kernel_name.c_str());
         printf("[%d] \t function_address: %lx\n", g_curr_event, (uint64_t) function_address);
         printf("[%d] \t numBlocks: %d %d %d\n", g_curr_event, numBlocks.x, numBlocks.y, numBlocks.z);
         printf("[%d] \t dimBlocks: %d %d %d\n", g_curr_event, dimBlocks.x, dimBlocks.y, dimBlocks.z);
@@ -522,11 +530,10 @@ hipError_t hipLaunchKernel(const void* function_address,
     gputrace_event_launch launch_event;
 
     event.id = g_curr_event++;
-    event.name = __func__;
+    event.name = "hipLaunchKernel";
     event.rc = result;
     event.stream = stream;
     event.type = EVENT_LAUNCH;
-
 
     launch_event.kernel_name = kernel_name;
     launch_event.num_blocks = numBlocks;
@@ -535,6 +542,7 @@ hipError_t hipLaunchKernel(const void* function_address,
     launch_event.argdata = arg_data;
 
     event.data = std::move(launch_event);
+
     pushback_event(event);
 
     return result;
@@ -588,7 +596,7 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
     gputrace_event_launch launch_event;
 
     event.id = g_curr_event++;
-    event.name = __func__;
+    event.name = "hipModuleLaunchKernel";
     event.rc = result;
     event.stream = stream;
     event.type = EVENT_LAUNCH;
@@ -608,6 +616,7 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
 
 void* __hipRegisterFatBinary(const void* data)
 {
+    std::printf("WHY\n");
     if (hipRegisterFatBinary_fptr == NULL) {
         hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(rocmLibHandle, "__hipRegisterFatBinary");
     }
