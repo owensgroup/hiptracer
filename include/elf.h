@@ -17,7 +17,7 @@ struct ArgInfo {
     std::string access;
 };
 
-std::vector<ArgInfo> getArgInfo(const char* fname)
+void getArgInfo(const char* fname, std::map<std::string, std::vector<ArgInfo>>& names_to_info)
 {
     elfio reader;
 	
@@ -31,7 +31,6 @@ std::vector<ArgInfo> getArgInfo(const char* fname)
     Elf_Half sec_num = reader.sections.size(); 
 	//std::cout <<" Sections " << sec_num << std::endl;
 
-    std::vector<ArgInfo> arg_infos;
     for ( int i = 0; i < sec_num; ++i ) {
         section* psec = reader.sections[i];
 		//std::printf("TYPE %d SHT_NOTE == %d\n", psec->get_type(), SHT_NOTE);
@@ -52,12 +51,12 @@ std::vector<ArgInfo> getArgInfo(const char* fname)
                 for (int i = 0; i < map_size; i++) {
                     uint32_t key_len;
                     const char* key = mp_decode_str(&r, &key_len);
-                    
-                    //std::printf("Key Length: %d\n", key_len);
-                    //std::printf("Key:%.*s\n", key_len, key);
-                    
+                     
                     if (std::string(key, key_len) == "amdhsa.kernels") {
                         uint32_t num_kernels = mp_decode_array(&r);
+                        std::string kernel_name;
+                        std::vector<ArgInfo> arg_infos;
+
                         for (int i = 0; i < num_kernels; i++) {
                             uint32_t kern_map_size = mp_decode_map(&r);
 
@@ -99,10 +98,18 @@ std::vector<ArgInfo> getArgInfo(const char* fname)
                                         arg_infos.push_back(info);
                                     }
                                     
-                                } else {
+                                } else if (std::string(kern_key, kkey_len) == ".name") {
+                                    uint32_t kkern_len = 0;
+                                    const char* kkern_name = mp_decode_str(&r, &kkern_len);
+                                    kernel_name = std::string(kkern_name, kkern_len);
+                                }
+                                else {
                                     mp_next(&r); // Skip value
                                 }
                             }
+
+                            names_to_info[kernel_name.c_str()] = arg_infos;
+                            names_to_info.clear();
                         }
                     }
                     else {
@@ -111,20 +118,5 @@ std::vector<ArgInfo> getArgInfo(const char* fname)
                 }
             }
         }
-    } 
-
-    /*
-    for (int i = 0; i < arg_infos.size(); i++) {
-        auto info = arg_infos[i];
-        if (info.address_space.size() > 0)
-            std::cout << "Address Space :: " << info.address_space << std::endl;
-        if (info.access.size() > 0)
-            std::cout << "ACCESS " << info.access.size() << std::endl;
-        std::cout << "Size" << info.size << std::endl;
-        std::cout << "Offset" << info.offset << std::endl;
-        std::cout << "Value Kind: " << info.value_kind << std::endl;
     }
-    */
-
-    return arg_infos;
 }

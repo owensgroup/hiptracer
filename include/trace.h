@@ -26,7 +26,7 @@ typedef struct gputrace_event_malloc {
 typedef struct gputrace_event_memcpy {
     uint64_t dst;
     uint64_t src;
-    size_t size;
+    uint64_t size;
     hipMemcpyKind kind;
     std::vector<std::byte> hostdata;
 } gputrace_event_memcpy;

@@ -30,6 +30,8 @@ std::vector<const char*> event_names = {
     "hipLaunchKernel"
 };
 
+std::map<const char*, std::vector<ArgInfo>> names_to_info;
+
 uintptr_t getReplayPointer(uintptr_t p) 
 {
     return allocations[(uintptr_t)p];
@@ -210,7 +212,7 @@ int step_event(gputrace_event replay_event)
         std::printf("\tGetting arg info from code object\n");
         uint64_t total_argsize = 0;
         
-        std::vector<ArgInfo> arg_infos = getArgInfo(g_codeobj_filename.c_str());
+        std::vector<ArgInfo> arg_infos; // = getArgInfo(g_codeobj_filename.c_str(), kernel_name.c_str());
         std::printf("arg_infos size %d\n", arg_infos.size());
 
         std::printf("\tChecking args for allocations\n");
