@@ -11,37 +11,55 @@ The ordering of /opt/rocm/hip and /opt/rocm matters.
 ```
 mkdir build && cd build
 cmake -DCMAKE_HIP_COMPILER=/opt/rocm/bin/hipcc -DCMAKE_PREFIX_PATH=/opt/rocm/hip -DCMAKE_PREFIX_PATH=/opt/rocm ..
+make -j4
 ```
 
-To build the CLI utility, a Golang compiler is required. The CLI utility is not needed to create captures, but if you
-have a Go compiler on your `$PATH`, it will be compiled as part of the CMake build.
+The capture library, replay tool, and CLI utility will all be built after this process.
 
 # Running
-To create a capture, use the CLI utility or set environment variables yourself. 
+To create a capture, use the CLI utility or set environment variables yourself before running your GPU program.
 
 ## CLI Usage
-The CLI utility handles setting environment variables for you. 
+The CLI utility handles setting environment variables for you. Make sure to use the `--` or "double-dash" when
+your program has its own arguments separate from hiptracer.
 ```
-./hiptracer [--output tracer-default.db] [--tracer-library ./libhiptracer.so] <your gpu executable and args>
+./hiptracer [-o tracer-default.db] [-l ./libhiptracer.so] -- <your gpu executable and args>
 ```
-Creates a capture `tracer-default.db` in the current working directory.
+Creates a capture `tracer-default.db` in the current working directory. For example,
+
+```
+$ ./hiptracer ../examples/vectorAdd/vectoradd_hip.exe
+ System minor 0
+ System major 9
+ agent prop name
+hip Device prop succeeded
+FREE 34330378240
+TOTAL 34342961152
+EVENTS REMAINING 6
+[        #         #         #         #        #] 100%
+CAPTURE COMPLETE
+```
+
+A progressbar that indicates capture progress is displayed after the program exits. Writing captures should
+have no impact on the actual program by deferring most writing till after it exits.
 
 ## Environment
 You can set the environment variables yourself as below:
 ```
-LD_PRELOAD=<path to libhiptracer.so> HIPTRACER_CAPTURE=<capture file> <your program and args>
+LD_PRELOAD=<path to libhiptracer.so> HIPTRACER_EVENTDB=<capture file> <your program and args>
 ```
 
 Variables always use a default value if unset:
 
 | ENV Variable        | Default Value       | Use                                       |
 | ------------        | ------------------  | ----------------------------------------- |
-| `HIPTRACER_CAPTURE` | `tracer-default.db` | Name of capture file                      |
-| `HIPTRACER_DEBUG`   | `false`             | Enable debug output during capture (slow) |
-| `HIPTRACER_PROGRESS`| `true`              | Display write progress after program exit |
+| `HIPTRACER_EVENTDB` | `tracer-default.db` | Name of capture file                      |
+| `HIPTRACER_DEBUG`   | `false`             | Enable debug output during capture |
+| `HIPTRACER_SKIPHOSTDATA`| `false`              | Skip writing host data during capture, (improves capture speed, but makes complete replay impossible) | 
 
 
-Note: We attempt to run the captured program with minimal intrusion and slowdown, so the majority of capture and all disk access occurs on a separate thread. Larger programs require additional time to write the capture to disk after the captured program exits. This is displayed with a progressbar, which can be disabled with the `HIPTRACER_PROGRESS` variable.
+Note: We attempt to run the captured program with minimal intrusion and slowdown, so the majority of capture and all disk access occurs on a separate thread. Larger programs require additional time to write the capture to disk after the captured program exits. Host side arrays that were copied to the GPU are the largest source of capture time. If you'd like to skip
+capturing this data because you already have it or don't need it, you can set the `SKIPHOSTDATA` environment variable.
 
 # Storage Format
 Captures are stored as a sqlite3 database file that can be viewed with standard tools, ex:
@@ -51,18 +69,30 @@ sqlite3 tracer-default.db
 ...
 ```
 displays all the events in a given capture file. For the event specific data, a separate table with a matching ID is
-used. Use `.schema` in sqlite3 for a list of all event types and their corresponding table.
+used. Ex: Malloc events have a table EventsMalloc, where additional information like `dst` and `src` are stored. Use `.schema` in sqlite3 for a list of all event types and their corresponding table and column information.
 
 # Examples & Tests
-Some tests are included that capture the HIP programs under examples/.
+Some tests are included that capture the HIP programs under examples/. Functionality is a WIP as new programs are enabled and bugs are fixed. Tests can be run under CMake with ctest after building.
 
 # Results
+Capture sizes may be inaccurate if replay doesn't function.
+Replay indicates current status of replay tool with the program.
+"Slow?" indicates the program was slow to capture. Likely due to a large amount of host data.
 
-| Example Program | Capture Size |
-| ----------------| ------------ |
-| `vectoradd_hip` |    43K       |
-| `kripke`        |   422K       |
+| Example Program | Capture Size | Replay Functionality | Slow? |
+| ----------------| ------------ | -------------------  | ----- |
+| `vectoradd_hip` |    8.1M       | ⭕ | ❌ |
+| `cuda-stream`   |    32K        | ❌ | ❌ |
+| `strided-access` | 84K          | ❌ | ❌ |
+| `reduction`     |  201M         | ❌ | ⭕ |
+| `kripke`        |   262M        | ❌ | ⭕ |
 
-# Replay
+# Compression
+(WIP)
 
-WIP
+# Issues
+
+* Replay is very problematic right now, only really works correctly with vectoradd
+* Multiple devices do not work
+* Code object detection is very buggy, so if you have multiple AMD devices, the right GPU code might not be saved. (WIP)
+

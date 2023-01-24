@@ -15,7 +15,7 @@
 
 sqlite3* g_event_db = NULL;
 sqlite3* g_results_db = NULL; 
-std::string g_codeobj_filename = "./hipv4-amdgcn-amd-amdhsa--gfx908.code";
+std::string g_codeobj_filename = "./hipv4-amdgcn-amd-amdhsa--gfx9081.code";
 
 std::unordered_map<uintptr_t, uintptr_t> allocations;
 std::unordered_map<uintptr_t, std::vector<std::byte>> host_buffers;
@@ -212,7 +212,9 @@ int step_event(gputrace_event replay_event)
         std::printf("\tGetting arg info from code object\n");
         uint64_t total_argsize = 0;
         
-        std::vector<ArgInfo> arg_infos; // = getArgInfo(g_codeobj_filename.c_str(), kernel_name.c_str());
+        std::map<std::string, std::vector<ArgInfo>> names_to_infos;
+        getArgInfo(g_codeobj_filename.c_str(), names_to_infos);
+        std::vector<ArgInfo> arg_infos = names_to_infos[kernel_name];
         std::printf("arg_infos size %d\n", arg_infos.size());
 
         std::printf("\tChecking args for allocations\n");
@@ -345,6 +347,9 @@ __attribute__((constructor)) void replay_init()
 
 __attribute__((destructor)) void replay_destroy()
 {
+    char* sql = "DROP TABLE IF EXISTS Results;";
+    sqlite3_exec(g_results_db, sql, 0, 0, NULL);
+
     sqlite3_close(g_event_db);
     sqlite3_close(g_results_db);
 }

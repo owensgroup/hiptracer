@@ -108,8 +108,9 @@ void getArgInfo(const char* fname, std::map<std::string, std::vector<ArgInfo>>& 
                                 }
                             }
 
+                            std::printf("Adding %s to nameinfo with size %d\n", kernel_name.c_str(), arg_infos.size());
                             names_to_info[kernel_name.c_str()] = arg_infos;
-                            names_to_info.clear();
+                            arg_infos.clear();
                         }
                     }
                     else {

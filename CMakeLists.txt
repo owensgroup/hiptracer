@@ -25,3 +25,19 @@ target_include_directories(hiptracer PUBLIC include)
 
 enable_testing()
 
+## Little Tests
+add_test(NAME vectoradd COMMAND ${CMAKE_BUILD_DIR}/hiptracer -o vectoradd.db ${CMAKE_SOURCE_DIR}/examples/vectorAdd/vectoradd_hip.exe)
+add_test(NAME cuda-stream COMMAND ${CMAKE_BUILD_DIR}/hiptracer -o cuda-stream.db ${CMAKE_SOURCE_DIR}/examples/cuda-stream/stream)
+add_test(NAME strided-access COMMAND ${CMAKE_BUILD_DIR}/hiptracer -o strided-access.db ${CMAKE_SOURCE_DIR}/examples/strided-access/strided-access)
+
+add_test(NAME kripke COMMAND ${CMAKE_BUILD_DIR}/hiptracer -o kripke.db -- ${CMAKE_SOURCE_DIR}/examples/Kripke/build/bin/kripke.exe --niter 1)
+
+# strided-access
+# gpu-stream
+
+## Big Tests
+#add_test(NAME add4 COMMAND ${CMAKE_BUILD_DIR}/hiptracer --output add4.db ${CMAKE_SOURCE_DIR}/examples/add4/runhip.sh)
+add_test(NAME reduction COMMAND ${CMAKE_BUILD_DIR}/hiptracer -o reduction.db ${CMAKE_SOURCE_DIR}/examples/reduction/reduction)
+#add_test(NAME rtm8 COMMAND ${CMAKE_BUILD_DIR}/hiptracer ${CMAKE_SOURCE_DIR}/examples/rtm8/rtm8_hip --output rtm8.db)
+
+

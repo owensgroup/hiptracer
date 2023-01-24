@@ -34,6 +34,7 @@ bool REWRITE = false;
 const char* EVENTDB = NULL;
 
 int g_curr_event = 0;
+bool g_capture_hostdata = true;
 sqlite3 *g_event_db = NULL;
 std::string g_codeobj_filename = "hipv4-amdgcn-amd-amdhsa--gfx908.code";
 
@@ -57,9 +58,16 @@ __attribute__((constructor)) void hiptracer_init()
     
     DEBUG = as_bool(std::getenv("HIPTRACER_DEBUG"));
     EVENTDB = std::getenv("HIPTRACER_EVENTDB");
+    char* SKIPHOSTDATA = std::getenv("HIPTRACER_SKIPHOSTDATA");
 
     if (EVENTDB == NULL) {
         EVENTDB = "./tracer-default.db";
+    }
+    if (SKIPHOSTDATA == NULL) {
+        g_capture_hostdata = true;
+    } else {
+        g_capture_hostdata = false;
+        std::printf("Skipping host data\n");
     }
     
     rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
@@ -92,7 +100,8 @@ __attribute__((constructor)) void hiptracer_init()
                               "CREATE TABLE Code(Id INTEGER PRIMARY KEY, Idx INTEGER, Triple TEXT, Path TEXT);";
     if(sqlite3_exec(g_event_db, create_events_sql, 0, 0, NULL)) {
         std::printf("Failed to create Events table: %s\n", sqlite3_errmsg(g_event_db));
-        std::exit(-1);
+        std::printf("???\n");
+        std::exit(EXIT_FAILURE);
     }
 
     g_library_loaded = true;
@@ -190,7 +199,7 @@ int insert_memcpy(gputrace_event event, sqlite3_stmt* pStmt)
 
     rc = sqlite3_bind_int(pStmt, 6, memcpy_event.kind);
 
-    if (memcpy_event.kind == hipMemcpyHostToDevice) {
+    if (memcpy_event.kind == hipMemcpyHostToDevice && g_capture_hostdata) {
         rc = sqlite3_bind_blob(pStmt, 7, memcpy_event.hostdata.data(), memcpy_event.hostdata.size(), SQLITE_STATIC);
     }
 
@@ -264,7 +273,7 @@ void prepare_events()
             } else if (event.type == EVENT_LAUNCH) {
                 insert_launch(event, launchStmt);
             }
-			if (!g_library_loaded && progress != NULL) {
+			if (progress != NULL) {
 				progress->update();
 			}
         }
@@ -274,7 +283,7 @@ void prepare_events()
     }
 
     sqlite3_exec(g_event_db, "END TRANSACTION", NULL, NULL, &errmsg);
-    std::printf("ERROR?%s\n", errmsg);
+
 	std::printf("\nCAPTURE COMPLETE\n");
 
     sqlite3_finalize(eventStmt);
@@ -497,6 +506,9 @@ hipError_t hipLaunchKernel(const void* function_address,
     std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
     
     std::vector<ArgInfo> arg_infos = names_to_info[kernel_name.c_str()];
+    std::printf("names to info size%d\n", names_to_info.size());
+    std::printf("ARG INFO SIZE %d\n", arg_infos.size());
+    std::printf("Looking for %s\n", kernel_name.c_str());
 
     uint64_t total_size = 0;
     if (arg_infos.size() > 0) {
@@ -508,6 +520,8 @@ hipError_t hipLaunchKernel(const void* function_address,
     for(int i = 0; i < arg_infos.size(); i++) {
         std::memcpy(arg_data.data() + arg_infos[i].offset, args[i], arg_infos[i].size);
     }
+
+    std::printf("ARG SIZE %d\n", arg_data.size());
 
     if (DEBUG) {
         printf("[%d] hooked: hipLaunchKernel\n", g_curr_event);
@@ -564,9 +578,7 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
     
     if (hipKernelNameRef_fptr == NULL) {
         hipKernelNameRef_fptr = ( const char* (*) (const hipFunction_t)) dlsym(rocmLibHandle, "hipKernelNameRef");
-    }
-    
-    std::printf("HELLO\n");
+    }  
 
     const char* kernel_name = (*hipKernelNameRef_fptr)(f);
 
@@ -583,8 +595,6 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
         std::memcpy(arg_data.data() + arg_infos[i].offset, kernelParams[i], arg_infos[i].size);
         // FIXME? (kernelParams?, __HIP__KERNEL_PARAM___?)
     }
-
-    std::printf("Here?\n");
     
     hipError_t result = (*hipModuleLaunchKernel_fptr)(f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ,
                                                             sharedMemBytes, stream, kernelParams, extra);
@@ -667,7 +677,7 @@ void* __hipRegisterFatBinary(const void* data)
         std::memcpy(triple.data(), bytes.data() + sizeof(desc), desc.tripleSize);
         triple[desc.tripleSize] = '\0';
 
-        std::string filename = std::string("./") + triple.c_str() + ".code" + std::to_string(g_curr_event);
+        std::string filename = std::string("./") + triple.c_str() + std::to_string(g_curr_event) + ".code";
 
         getArgInfo(filename.c_str(), names_to_info);
         std::FILE* code = std::fopen(filename.c_str(), "wb");
