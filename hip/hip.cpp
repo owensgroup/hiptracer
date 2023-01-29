@@ -340,6 +340,11 @@ hipError_t  (*hipSetupArgument_fptr)(const void* arg, size_t size, size_t offset
 hipChannelFormatDesc (*hipCreateChannelDesc_fptr)(int x, int y, int z, int w, hipChannelFormatKind f) = NULL;
 
 hipError_t (*hipStreamSynchronize_fptr)(hipStream_t stream) = NULL;
+hipError_t (*hipDeviceSynchronize_fptr)() = NULL;
+//hipError_t (*hipGetDeviceCount_fptr)(...) = NULL;
+//hipError_t (*hipGetDevice_fptr)(...) = NULL;
+
+//hipError_t (*hipStreamCreate_fptr)(...) = NULL;
 
 hipError_t hipStreamSynchronize(hipStream_t stream)
 {
@@ -355,6 +360,27 @@ hipError_t hipStreamSynchronize(hipStream_t stream)
     event.name = "hipStreamSynchronize";
     event.rc = result;
     event.stream = stream;
+    event.type = EVENT_SYNC;
+
+    pushback_event(event);
+
+    return result;
+}
+
+hipError_t hipDeviceSynchronize()
+{
+    if (hipDeviceSynchronize_fptr == NULL) {
+        hipDeviceSynchronize_fptr = (hipError_t (*) ()) dlsym(rocmLibHandle, "hipDeviceSynchronize");
+    }
+
+    hipError_t result = (*hipDeviceSynchronize_fptr)();
+
+    gputrace_event event;
+
+    event.id = g_curr_event++;
+    event.name = "hipDeviceSynchronize";
+    event.rc = result;
+    event.stream = hipStreamDefault;
     event.type = EVENT_SYNC;
 
     pushback_event(event);
@@ -595,8 +621,6 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
         void ** kernelParams,
         void ** extra)
 {
-    g_curr_event++;
-
     if (hipModuleLaunchKernel_fptr == NULL) {
         hipModuleLaunchKernel_fptr = ( hipError_t (*) (hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
     }

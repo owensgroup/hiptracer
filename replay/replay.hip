@@ -73,9 +73,12 @@ int get_memcpy(int event_id, uintptr_t& dst, uintptr_t& src, size_t& size, hipMe
     size = sqlite3_column_int(pStmt, 2);
     kind = (hipMemcpyKind) sqlite3_column_int(pStmt, 3);
     if (kind == hipMemcpyHostToDevice) {
-        const void * blob = sqlite3_column_blob(pStmt, 4);
+        std::string filename = "./hostdata-" + std::to_string(event_id) + ".bin"; 
+        std::FILE* fp = std::fopen(filename.c_str());
+
         buffer.resize(size);
-        std::memcpy(buffer.data(), blob, size);
+        std::fread(buffer.data(), size, 1, fp);
+        std::fclose(fp);
     }
 
     return rc;
