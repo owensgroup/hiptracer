@@ -36,7 +36,7 @@ const char* EVENTDB = NULL;
 int g_curr_event = 0;
 bool g_capture_hostdata = true;
 sqlite3 *g_event_db = NULL;
-std::string g_codeobj_filename = "hipv4-amdgcn-amd-amdhsa--gfx908.code";
+std::string g_codeobj_filename = "hipv4-amdgcn-amd-amdhsa--gfx9081.code";
 
 void* rocmLibHandle = NULL;
 
@@ -200,7 +200,11 @@ int insert_memcpy(gputrace_event event, sqlite3_stmt* pStmt)
     rc = sqlite3_bind_int(pStmt, 6, memcpy_event.kind);
 
     if (memcpy_event.kind == hipMemcpyHostToDevice && g_capture_hostdata) {
-        rc = sqlite3_bind_blob(pStmt, 7, memcpy_event.hostdata.data(), memcpy_event.hostdata.size(), SQLITE_STATIC);
+        //rc = sqlite3_bind_blob(pStmt, 7, memcpy_event.hostdata.data(), memcpy_event.hostdata.size(), SQLITE_STATIC);
+        std::string filename = "hostdata-" + std::to_string(event.id); + ".bin";
+        std::FILE* fp = std::fopen(filename.c_str(), "wb");
+        std::fwrite(memcpy_event.hostdata.data(), memcpy_event.hostdata.size(), 1, fp);
+        std::fclose(fp);
     }
 
     rc = sqlite3_step(pStmt);
@@ -323,14 +327,40 @@ hipError_t  (*hipMemcpy_fptr)(void*, const void*, size_t, hipMemcpyKind) = NULL;
 hipError_t  (*hipGetDeviceProperties_fptr)(hipDeviceProp_t*,int) = NULL;
 void*       (*hipRegisterFatBinary_fptr)(const void*) = NULL;
 hipError_t  (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, hipStream_t) = NULL;
-hipError_t  (*hipSetupArgument_fptr)(const void* arg, size_t size, size_t offset) = NULL;
 
 hipError_t  (*hipModuleLaunchKernel_fptr)(hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
                                          unsigned int, hipStream_t, void**, void**) = NULL;
+
 hipError_t  (*hipModuleLoad_fptr)(hipModule_t*, const char*) = NULL;
 hipError_t  (*hipModuleGetFunction_fptr)(hipFunction_t*, hipModule_t, const char*) = NULL;
 const char* (*hipKernelNameRefByPtr_fptr)(const void*, hipStream_t) = NULL;
 const char* (*hipKernelNameRef_fptr)(const hipFunction_t) = NULL;
+
+hipError_t  (*hipSetupArgument_fptr)(const void* arg, size_t size, size_t offset) = NULL;
+hipChannelFormatDesc (*hipCreateChannelDesc_fptr)(int x, int y, int z, int w, hipChannelFormatKind f) = NULL;
+
+hipError_t (*hipStreamSynchronize_fptr)(hipStream_t stream) = NULL;
+
+hipError_t hipStreamSynchronize(hipStream_t stream)
+{
+    if (hipStreamSynchronize_fptr == NULL) {
+        hipStreamSynchronize_fptr = (hipError_t (*) (hipStream_t)) dlsym(rocmLibHandle, "hipStreamSynchronize");
+    }
+
+    hipError_t result = (*hipStreamSynchronize_fptr)(stream);
+
+    gputrace_event event;
+
+    event.id = g_curr_event++;
+    event.name = "hipStreamSynchronize";
+    event.rc = result;
+    event.stream = stream;
+    event.type = EVENT_SYNC;
+
+    pushback_event(event);
+
+    return result;
+}
 
 hipError_t hipFree(void *p)
 {
@@ -506,9 +536,6 @@ hipError_t hipLaunchKernel(const void* function_address,
     std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
     
     std::vector<ArgInfo> arg_infos = names_to_info[kernel_name.c_str()];
-    std::printf("names to info size%d\n", names_to_info.size());
-    std::printf("ARG INFO SIZE %d\n", arg_infos.size());
-    std::printf("Looking for %s\n", kernel_name.c_str());
 
     uint64_t total_size = 0;
     if (arg_infos.size() > 0) {
@@ -520,8 +547,6 @@ hipError_t hipLaunchKernel(const void* function_address,
     for(int i = 0; i < arg_infos.size(); i++) {
         std::memcpy(arg_data.data() + arg_infos[i].offset, args[i], arg_infos[i].size);
     }
-
-    std::printf("ARG SIZE %d\n", arg_data.size());
 
     if (DEBUG) {
         printf("[%d] hooked: hipLaunchKernel\n", g_curr_event);
@@ -679,10 +704,10 @@ void* __hipRegisterFatBinary(const void* data)
 
         std::string filename = std::string("./") + triple.c_str() + std::to_string(g_curr_event) + ".code";
 
-        getArgInfo(filename.c_str(), names_to_info);
         std::FILE* code = std::fopen(filename.c_str(), "wb");
         std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
         std::fclose(code);
+        getArgInfo(filename.c_str(), names_to_info);
 
 		const char* sql = "INSERT INTO Code(Idx, Triple, Path) VALUES(?, ?, ?)";
 		sqlite3_stmt* pStmt; 

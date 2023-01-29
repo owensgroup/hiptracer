@@ -15,7 +15,11 @@ typedef enum HIP_EVENT {
     EVENT_MALLOC,
     EVENT_MEMCPY,
     EVENT_FREE,
-    EVENT_LAUNCH
+    EVENT_LAUNCH,
+    EVENT_SYNC,
+    EVENT_HOST,
+    EVENT_GPUEVENT,
+    EVENT_STREAM
 } HIP_EVENT;
 
 typedef struct gputrace_event_malloc {
