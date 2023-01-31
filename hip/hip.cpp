@@ -338,13 +338,146 @@ const char* (*hipKernelNameRef_fptr)(const hipFunction_t) = NULL;
 hipError_t  (*hipSetupArgument_fptr)(const void* arg, size_t size, size_t offset) = NULL;
 hipChannelFormatDesc (*hipCreateChannelDesc_fptr)(int x, int y, int z, int w, hipChannelFormatKind f) = NULL;
 
-hipError_t (*hipStreamSynchronize_fptr)(hipStream_t stream) = NULL;
+hipError_t (*hipStreamSynchronize_fptr)(hipStream_t) = NULL;
 hipError_t (*hipDeviceSynchronize_fptr)() = NULL;
-//hipError_t (*hipGetDeviceCount_fptr)(...) = NULL;
-//hipError_t (*hipGetDevice_fptr)(...) = NULL;
+hipError_t (*hipStreamCreate_fptr)(hipStream_t*) = NULL;
+hipError_t (*hipStreamCreateWithFlags_fptr)(hipStream_t*, unsigned int) = NULL;
+hipError_t (*hipGetDeviceCount_fptr)(int*) = NULL;
+hipError_t (*hipGetDevice_fptr)(int*) = NULL;
+hipError_t (*hipStreamDestroy_fptr)(hipStream_t) = NULL;
+hipError_t (*hipStreamQuery_fptr)(hipStream_t) = NULL;
+hipError_t (*hipStreamWaitEvent_fptr)(hipStream_t, hipEvent_t, unsigned int) = NULL;
 
-//hipError_t (*hipStreamCreate_fptr)(...) = NULL;
+hipError_t (*hipEventCreate_fptr)(hipEvent_t *) = NULL;
+hipError_t (*hipEventCreateWithFlags_fptr)(hipEvent_t *, unsigned) = NULL;
+hipError_t (*hipEventRecord)(hipEvent_t, hipStream_t) = NULL;
+hipError_t (*hipEventDestroy)(hipEvent_t) = NULL;
+hipError_t (*hipEventSynchronize)(hipEvent_t) = NULL;
+hipError_t (*hipEventQuery)(hipEvent_t event) = NULL;
 
+hipError_t hipStreamDestroy(hipStream_t stream) {
+    if (hipStreamDestroy_fptr == NULL) {
+        hipStreamDestroy_fptr = (hipError_t (*) (hipStream_t)) dlsym(rocmLibHandle)
+    }
+
+    hipError_t result = (*hipStreamDestroy_fptr)(stream);
+
+    gputrace_event event;
+
+    event.id = g_curr_event++;
+    event.name = "hipStreamDestroy";
+    event.rc = result;
+    event.stream = stream;
+    event.type = EVENT_STREAM;
+
+    pushback_event(event);
+
+    return result;
+}
+
+hipError_t hipStreamCreateWithFlags(hipStream_t* stream, unsigned flags) {
+    if (hipStreamCreateWithFlags_fptr == NULL) {
+        hipStreamCreateWithFlags_fptr = (hipError_t (*) (hipStream_t*, unsigned)) dlsym(rocmLibHandle)
+    }
+
+    hipError_t result = (*hipStreamDestroy_fptr)(stream);
+
+    gputrace_event event;
+
+    event.id = g_curr_event++;
+    event.name = "hipStreamCreateWithFlags";
+    event.rc = result;
+    event.stream = stream;
+    event.type = EVENT_STREAM;
+
+    pushback_event(event);
+
+    return result;
+}
+
+hipError_t hipStreamCreate(hipStream_t* stream)
+{
+    if (hipStreamCreate_fptr == NULL) {
+        hipStreamCreate_fptr = (hipError_t (*) (hipStream_t*)) dlsym(rocmLibHandle, "hipStreamCreate");
+    }
+
+    hipError_t result = (*hipStreamCreate_fptr)(stream);
+
+    gputrace_event event;
+
+    event.id = g_curr_event++;
+    event.name = "hipStreamCreate";
+    event.rc = result;
+    if (stream != NULL) {
+            event.stream = *stream;
+    }
+    event.type = EVENT_STREAM;
+
+    pushback_event(event);
+
+    return result;
+}
+
+hipError_t hipStreamDestroy(hipStream_t stream)
+{
+    if (hipStreamDestroy_fptr == NULL) {
+        hipStreamDestroy_fptr = (hipError_t (*) (hipStream_t)) dlsym(rocmLibHandle, "hipStreamDestroy");
+    }
+
+    hipError_t result = (*hipStreamDestroy_fptr)(stream);
+
+    gputrace_event event;
+
+    event.id = g_curr_event++;
+    event.name = "hipStreamDestroy";
+    event.rc = result;
+    event.stream = stream;
+    event.type = EVENT_STREAM;
+
+    pushback_event(event);
+
+    return result;
+}
+
+hipError_t hipGetDevice(int* deviceId) {
+    if (hipGetDevice_fptr == NULL) {
+        hipGetDevice_fptr = (hipError_t (*) (int* deviceId)) dlsym(rocmLibHandle, "hipGetDevice");
+    }
+
+    hipError_t result = (*hipGetDevice_fptr)(deviceId);
+
+    gputrace_event event;
+
+    event.id = g_curr_event++;
+    event.name = "hipGetDevice";
+    event.rc = result;
+    event.stream = hipStreamDefault;
+    event.type = EVENT_DEVICE;
+
+    pushback_event(event);
+
+    return result;
+}
+
+
+hipError_t hipGetDeviceCount(int* count) {
+    if (hipGetDeviceCount_fptr == NULL) {
+        hipGetDeviceCount_fptr = (hipError_t (*) (int* count)) dlsym(rocmLibHandle, "hipGetDeviceCount");
+    }
+
+    hipError_t result = (*hipGetDeviceCount_fptr)(count);
+
+    gputrace_event event;
+    event.id = g_curr_event++;
+    event.name = "hipGetDeviceCount";
+    event.rc = result;
+    event.stream = hipStreamDefault;
+    event.type = EVENT_DEVICE;
+
+    pushback_event(event);
+
+    return result;
+}
 hipError_t hipStreamSynchronize(hipStream_t stream)
 {
     if (hipStreamSynchronize_fptr == NULL) {
