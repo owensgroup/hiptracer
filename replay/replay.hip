@@ -18,14 +18,15 @@
 
 sqlite3* g_event_db = NULL;
 sqlite3* g_results_db = NULL; 
-std::string g_codeobj_filename = "./hipv4-amdgcn-amd-amdhsa--gfx9081.code";
+static std::vector<std::string> code_objects;
 
 std::unordered_map<uintptr_t, uintptr_t> allocations;
 std::unordered_map<uintptr_t, std::vector<std::byte>> host_buffers;
+std::unordered_map<hipStream_t, hipStream_t> stream_mappings;
 
 std::vector<std::pair<hipEvent_t, hipEvent_t>> timers;
 
-std::vector<const char*> event_names = {
+std::vector<std::string> event_names = {
     "hipMalloc",
     "hipMemcpy",
     "hipGetDeviceProperties",
@@ -33,19 +34,22 @@ std::vector<const char*> event_names = {
     "hipLaunchKernel"
 };
 
-std::map<const char*, std::vector<ArgInfo>> names_to_info;
+std::map<std::string, std::vector<ArgInfo>> names_to_infos;
 
 #define HIP_ASSERT(ans) \
   { \
-    if (ans != hipSuccess) { \
+    if (ans == hipSuccess) { \
+        {} \
+    } else if (ans == hipErrorNotSupported) { \
+        std::printf("NOT SUPPORTED AT %s:%d\n", __FILE__, __LINE__); \
+    } else if (ans == hipErrorInvalidValue) {\
+        std::printf("INVALID VALUE AT %s:%d\n", __FILE__, __LINE__); \
+    } else if (ans != hipSuccess) { \
         std::printf("HIP ERROR AT %s:%d\n", __FILE__, __LINE__); \
-    } \
+    } else { \
+        std::printf("UNKNOWN HIP ERROR AT %s:%d\n", __FILE__, __LINE__); \
+    }\
   }
-
-uintptr_t getReplayPointer(uintptr_t p) 
-{
-    return allocations[(uintptr_t)p];
-}
 
 int get_free(int event_id, uintptr_t& p)
 {
@@ -156,6 +160,7 @@ int get_launch(int event_id, hipStream_t& stream, std::string& kernel_name, dim3
 
 int step_event(gputrace_event replay_event)
 {
+    std::printf("%d\n", code_objects.size());
     std::printf("%s\n", replay_event.name);
     hipEvent_t start;
     hipEvent_t finish;
@@ -163,13 +168,25 @@ int step_event(gputrace_event replay_event)
     HIP_ASSERT(hipEventCreate(&finish));
 
     HIP_ASSERT(hipEventRecord(start, hipStreamDefault));
+    std::string name = replay_event.name;
     /* Execute Event */
-    if (replay_event.type == EVENT_DEVICE) {
-        std::printf("hipGetDeviceProperties\n");
+    if (replay_event.type == EVENT_DEVICE && name == "hipGetDeviceProperties") {
         hipDeviceProp_t my_devProp;
         int device = 0; // FIXME
 
         HIP_ASSERT(hipGetDeviceProperties(&my_devProp, device));
+    } else if (name == "hipStreamCreate") {
+        hipStream_t stream;
+        HIP_ASSERT(hipStreamCreate(&stream));
+
+        stream_mappings[replay_event.stream] = stream;
+    } else if (name == "hipStreamSynchronize") {
+        hipStream_t stream = hipStreamDefault;
+        if (replay_event.stream != hipStreamDefault) {
+            stream = stream_mappings[replay_event.stream];
+        }
+
+        HIP_ASSERT(hipStreamSynchronize(stream));
     } else if (replay_event.type == EVENT_MEMCPY) {
         std::printf("hipMemcpy\n");
 
@@ -189,7 +206,11 @@ int step_event(gputrace_event replay_event)
 
             void* real_dst = (void*) it->second;
 
-            HIP_ASSERT(hipMemcpy(real_dst, buffer.data(), size, kind));
+            if (name == "hipMemcpyWithStream") {
+                HIP_ASSERT(hipMemcpyWithStream(real_dst, buffer.data(), size, kind, replay_event.stream));
+            } else {
+                HIP_ASSERT(hipMemcpy(real_dst, buffer.data(), size, kind));
+            }
         } else if (kind == hipMemcpyDeviceToHost) {
             auto it = host_buffers.find(dst);
             if (it == host_buffers.end()) {
@@ -200,7 +221,11 @@ int step_event(gputrace_event replay_event)
             std::vector<std::byte>& buff = it->second;
             if(buff.size() < size) { buff.resize(size); }
             
-            HIP_ASSERT(hipMemcpy(buff.data(), (void*) getReplayPointer(src), size, kind));
+            if (name == "hipMemcpyWithStream") {
+                HIP_ASSERT(hipMemcpyWithStream(buff.data(), (void*) allocations[src], size, kind, replay_event.stream));
+            } else {
+                HIP_ASSERT(hipMemcpy(buff.data(), (void*) allocations[src], size, kind));
+            }
             std::printf("EX IS %f\n", ((float*)buff.data())[12]);
         }
     } else if (replay_event.type == EVENT_LAUNCH) {
@@ -216,9 +241,11 @@ int step_event(gputrace_event replay_event)
         get_launch(replay_event.id, stream, kernel_name, numBlocks, dimBlocks, sharedMemBytes, args);
 
         uint64_t total_argsize = 0;
-        
+
         std::map<std::string, std::vector<ArgInfo>> names_to_infos;
-        getArgInfo(g_codeobj_filename.c_str(), names_to_infos);
+        for (int i = 0; i < code_objects.size(); i++) {
+            getArgInfo(code_objects[i].c_str(), names_to_infos);   
+        }
         std::vector<ArgInfo> arg_infos = names_to_infos[kernel_name];
 
         for (int i = 0; i < arg_infos.size(); i++) {
@@ -233,29 +260,34 @@ int step_event(gputrace_event replay_event)
 
                 auto ptr_it = allocations.find(value);
                 if (ptr_it != allocations.end()) {
-                    uintptr_t replay_value = ptr_it->second;                
-                    std::memcpy(args.data() + offset, &replay_value, size); 
+                    uintptr_t replay_value = ptr_it->second;
+                    std::memcpy(args.data() + offset, &replay_value, size);
                 } else {
-                    std::printf("Unable to find allocation\n");
+                    std::printf("Unable to find allocation of global_buffer argument\n");
                 }
             }
         }
-        std::printf("\t Load code object\n");
+
         hipModule_t module;
-        hipError_t load_res = hipModuleLoad(&module, g_codeobj_filename.c_str());
-
-        if (load_res != hipSuccess) {
-            std::printf("\t FAILED to LOAD CODE OBJECT\n");
-        }
-
         hipFunction_t kernel;
-        hipError_t func_res = hipModuleGetFunction(&kernel, module, kernel_name.c_str());
+        bool found = false;
+        for (int i = 0; i < code_objects.size(); i++) {
+            std::printf("Checking %s\n", code_objects[i].c_str());
+            hipError_t load_res = hipModuleLoad(&module, code_objects[i].c_str());
+            if (load_res == hipSuccess) {
+                std::printf("\t LOADed CODE OBJECT\n");
+            }
 
-        if (func_res == hipSuccess) {
-            std::printf("\t SUCCESS found kernel: %s\n", kernel_name.c_str());
-        } else {
-            // FIXME
-            std::printf("\t ERROR unable to find %s\n", kernel_name.c_str());
+            hipError_t func_res = hipModuleGetFunction(&kernel, module, kernel_name.c_str());
+
+            if (func_res == hipSuccess) {
+                std::printf("\t SUCCESS found kernel: %s\n", kernel_name.c_str());
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std::printf("Unable to find kernel %s in any code object\n", kernel_name.c_str());
             return -1;
         }
 
@@ -267,45 +299,47 @@ int step_event(gputrace_event replay_event)
             &args_size, // address of operator (&) is intended
             HIP_LAUNCH_PARAM_END};
 
-        assert(stream == hipStreamDefault);
+        hipStream_t new_stream = hipStreamDefault;
+        if (stream != hipStreamDefault) {
+            new_stream = stream_mappings[stream];
+        }
+
         HIP_ASSERT(hipModuleLaunchKernel(kernel,numBlocks.x, numBlocks.y, numBlocks.z,
                                       dimBlocks.x, dimBlocks.y, dimBlocks.z,
-                                      sharedMemBytes, stream, NULL, &config[0]));
+                                      sharedMemBytes, new_stream, NULL, &config[0]));
     } else if (replay_event.type == EVENT_MALLOC) {
-        uintptr_t ptr = 0; 
+        uintptr_t ptr = NULL; 
         size_t size;
 
         int rc = get_malloc(replay_event.id, ptr, size);
 
-        void* ret = NULL;
-        int status = hipMalloc(&ret, size);
+        uintptr_t ret = NULL;
+
+        HIP_ASSERT(hipMalloc((void**)&ret, size));
 
         if (!ret) {
-            std::printf("Failed to provide traced allocation (error: %d)\n", status);
             return -1;
         } else {
-            std::printf("Allocation succeeded at location %lu\n", ptr);
-        } 
+            std::printf("Allocation succeeded at location %px\n", ret);
+        }
 
-        uintptr_t ptr_as_int = reinterpret_cast<uintptr_t>(ptr);
-        uintptr_t ret_as_int = reinterpret_cast<uintptr_t>(ret);
-
-        allocations.insert({ptr_as_int, ret_as_int});
+        allocations.insert({(uintptr_t)ptr, (uintptr_t)ret});
     } else if (replay_event.type == EVENT_FREE) {
-        uintptr_t p = 0;
+        uintptr_t p = NULL;
         int rc = get_free(replay_event.id, p);
 
-        void* real_ptr = NULL;
+        uintptr_t real_ptr = NULL;
         // Get actual pointer from allocations table
+
         if (allocations.find(p) != allocations.end()) {
-            real_ptr = reinterpret_cast<void*>(allocations[p]);
+            real_ptr = allocations[p];
         }
         if (real_ptr) {
-            HIP_ASSERT(hipFree(real_ptr));
+            HIP_ASSERT(hipFree((void*)real_ptr));
         }
     } else {
         // Unhandled event type
-        std::printf("Error: Event UNHANDLED\n");
+        std::printf("Error: Event UNHANDLED %s\n", replay_event.name);
     }
     HIP_ASSERT(hipEventRecord(finish, hipStreamDefault));
 
@@ -313,8 +347,8 @@ int step_event(gputrace_event replay_event)
     return 0;
 }
 
-__attribute__((constructor)) void replay_init()
-{
+int main()
+{   
     const char* db_filename = std::getenv("HIPTRACER_EVENTDB");
     if (db_filename == NULL) {
         db_filename = "tracer-default.db";
@@ -327,19 +361,34 @@ __attribute__((constructor)) void replay_init()
     if (sqlite3_open(":memory:", &g_results_db) != SQLITE_OK) {
         std::exit(-1);
     }
-}
 
-__attribute__((destructor)) void replay_destroy()
-{
-    const char* sql = "DROP TABLE IF EXISTS Results;";
-    sqlite3_exec(g_results_db, sql, 0, 0, NULL);
+    const char* code_sql = "SELECT Path FROM Code;";
+    sqlite3_stmt* pStmt;
+    int rc = sqlite3_prepare_v2(g_event_db, code_sql, -1, &pStmt, 0);
+    if (rc != SQLITE_OK) {
+        sqlite3_errmsg(g_event_db);
+    }
 
-    sqlite3_close(g_event_db);
-    sqlite3_close(g_results_db);
-}
+    //sqlite3_bind_text(pStmt, 1, "gfx908", -1, SQLITE_STATIC);
 
-int main()
-{   
+    rc = sqlite3_step(pStmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_errmsg(g_event_db);
+    }
+    while(rc == SQLITE_ROW) {
+        std::string name((char*)sqlite3_column_text(pStmt, 0));
+
+        code_objects.push_back(name);
+        rc = sqlite3_step(pStmt);
+    }
+    sqlite3_finalize(pStmt);
+
+    std::printf("Code objects size %d\n", code_objects.size());
+
+    for (int i = 0; i < code_objects.size(); i++) {
+        getArgInfo(code_objects[i].c_str(), names_to_infos);
+    }
+
     char* line = NULL;
     int curr_event = 0;
     std::vector<gputrace_event> events;
@@ -357,8 +406,12 @@ int main()
                 std::string name((char*)sqlite3_column_text(pStmt, 1));
                 for(int i = 0; i < event_names.size(); i++) {
                     if (event_names[i] == name) {
-                        event.name = event_names[i];
+                        event.name = event_names[i].c_str();
                     }
+                }
+                if (event.name == NULL) {
+                    event_names.push_back(name);
+                    event.name = event_names[event_names.size() - 1].c_str();
                 }
 
                 event.type = (HIP_EVENT) sqlite3_column_int(pStmt, 2);
@@ -405,4 +458,13 @@ int main()
             step_event(replay_event);
         }
     }
+
+
+    const char* sql = "DROP TABLE IF EXISTS Results;";
+    sqlite3_exec(g_results_db, sql, 0, 0, NULL);
+
+    sqlite3_close(g_event_db);
+    sqlite3_close(g_results_db);
+
+    return 0;
 }

@@ -4,9 +4,8 @@
 #include <iostream>
 #include <cstring>
 #include <string>
-#include <sstream>
-#include <functional>
-#include <future>
+#include <filesystem>
+#include <condition_variable>
 
 #include <dlfcn.h>
 
@@ -36,7 +35,6 @@ const char* EVENTDB = NULL;
 int g_curr_event = 0;
 bool g_capture_hostdata = true;
 sqlite3 *g_event_db = NULL;
-std::string g_codeobj_filename = "hipv4-amdgcn-amd-amdhsa--gfx9081.code";
 
 void* rocmLibHandle = NULL;
 
@@ -60,6 +58,9 @@ __attribute__((constructor)) void hiptracer_init()
     EVENTDB = std::getenv("HIPTRACER_EVENTDB");
     char* SKIPHOSTDATA = std::getenv("HIPTRACER_SKIPHOSTDATA");
 
+    std::filesystem::create_directory("./hostdata");
+    std::filesystem::create_directory("./code");
+
     if (EVENTDB == NULL) {
         EVENTDB = "./tracer-default.db";
     }
@@ -70,7 +71,7 @@ __attribute__((constructor)) void hiptracer_init()
         std::printf("Skipping host data\n");
     }
     
-    rocmLibHandle = dlopen("/opt/rocm/hip/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
+    rocmLibHandle = dlopen("/opt/rocm/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
     if (rocmLibHandle == NULL) {
         std::printf("Unable to open libamdhip64.so\n");
         std::exit(-1);
@@ -81,6 +82,7 @@ __attribute__((constructor)) void hiptracer_init()
         sqlite3_close(g_event_db);
         std::exit(-1);
     }
+    std::printf("Opened database\n");
     sqlite3_config(SQLITE_CONFIG_MULTITHREAD);
     
 
@@ -92,12 +94,12 @@ __attribute__((constructor)) void hiptracer_init()
                               "DROP TABLE IF EXISTS EventLaunch;"
                               "DROP TABLE IF EXISTS EventFree;"
                               "DROP TABLE IF EXISTS Code;"
+                              "CREATE TABLE Code(Id INTEGER PRIMARY KEY, Path TEXT);"
                               "CREATE TABLE Events(Id INTEGER PRIMARY KEY, EventType INT, Name TEXT, Rc INT, Stream INT);"
                               "CREATE TABLE EventMalloc(Id INTEGER PRIMARY KEY, Stream INT, Ptr INT64, Size INT);"
                               "CREATE TABLE EventMemcpy(Id INTEGER PRIMARY KEY, Stream INT, Dst INT64, Src INT64, Size INT, Kind INT, HostData BLOB);"
                               "CREATE TABLE EventLaunch(Id INTEGER PRIMARY KEY, Stream INT, KernelName TEXT, NumX INT, NumY INT, NumZ INT,DimX INT, DimY INT, DimZ INT, SharedMem INT, ArgData BLOB);"
-                              "CREATE TABLE EventFree(Id INTEGER PRIMARY KEY, Stream INT, Ptr INT);"
-                              "CREATE TABLE Code(Id INTEGER PRIMARY KEY, Idx INTEGER, Triple TEXT, Path TEXT);";
+                              "CREATE TABLE EventFree(Id INTEGER PRIMARY KEY, Stream INT, Ptr INT);";
     if(sqlite3_exec(g_event_db, create_events_sql, 0, 0, NULL)) {
         std::printf("Failed to create Events table: %s\n", sqlite3_errmsg(g_event_db));
         std::printf("???\n");
@@ -350,44 +352,29 @@ hipError_t (*hipStreamWaitEvent_fptr)(hipStream_t, hipEvent_t, unsigned int) = N
 
 hipError_t (*hipEventCreate_fptr)(hipEvent_t *) = NULL;
 hipError_t (*hipEventCreateWithFlags_fptr)(hipEvent_t *, unsigned) = NULL;
-hipError_t (*hipEventRecord)(hipEvent_t, hipStream_t) = NULL;
-hipError_t (*hipEventDestroy)(hipEvent_t) = NULL;
-hipError_t (*hipEventSynchronize)(hipEvent_t) = NULL;
-hipError_t (*hipEventQuery)(hipEvent_t event) = NULL;
+hipError_t (*hipEventRecord_fptr)(hipEvent_t, hipStream_t) = NULL;
+hipError_t (*hipEventDestroy_fptr)(hipEvent_t) = NULL;
+hipError_t (*hipEventSynchronize_fptr)(hipEvent_t) = NULL;
+hipError_t (*hipEventQuery_fptr)(hipEvent_t event) = NULL;
 
-hipError_t hipStreamDestroy(hipStream_t stream) {
-    if (hipStreamDestroy_fptr == NULL) {
-        hipStreamDestroy_fptr = (hipError_t (*) (hipStream_t)) dlsym(rocmLibHandle)
-    }
+hipError_t (*hipMemcpyWithStream_fptr)(void*, const void*, size_t, hipMemcpyKind, hipStream_t) = NULL;
 
-    hipError_t result = (*hipStreamDestroy_fptr)(stream);
-
-    gputrace_event event;
-
-    event.id = g_curr_event++;
-    event.name = "hipStreamDestroy";
-    event.rc = result;
-    event.stream = stream;
-    event.type = EVENT_STREAM;
-
-    pushback_event(event);
-
-    return result;
-}
 
 hipError_t hipStreamCreateWithFlags(hipStream_t* stream, unsigned flags) {
     if (hipStreamCreateWithFlags_fptr == NULL) {
-        hipStreamCreateWithFlags_fptr = (hipError_t (*) (hipStream_t*, unsigned)) dlsym(rocmLibHandle)
+        hipStreamCreateWithFlags_fptr = (hipError_t (*) (hipStream_t*, unsigned)) dlsym(rocmLibHandle, "hipStreamCreateWithFlags");
     }
 
-    hipError_t result = (*hipStreamDestroy_fptr)(stream);
+    hipError_t result = (*hipStreamCreateWithFlags)(stream, flags);
 
     gputrace_event event;
 
     event.id = g_curr_event++;
     event.name = "hipStreamCreateWithFlags";
     event.rc = result;
-    event.stream = stream;
+    if (stream != NULL) {
+        event.stream = *stream;
+    }
     event.type = EVENT_STREAM;
 
     pushback_event(event);
@@ -583,7 +570,7 @@ hipError_t hipMalloc(void** p, size_t size)
     event.rc = result;
     event.stream = hipStreamDefault;
     if (p == NULL) {
-        malloc_event.p = NULL;
+        malloc_event.p = 0;
     } else {
         malloc_event.p = (uint64_t) *p;
     }
@@ -615,6 +602,48 @@ hipError_t hipMemcpy(void *dst, const void *src, size_t size, hipMemcpyKind kind
     gputrace_event_memcpy memcpy_event;
     event.id = g_curr_event++;
     event.name = "hipMemcpy";
+    event.rc = result;
+    event.stream = hipStreamDefault;
+    event.type = EVENT_MEMCPY;
+
+    memcpy_event.dst = (uint64_t) dst;
+    memcpy_event.src = (uint64_t) src;	
+    memcpy_event.size = (uint64_t) size;
+    memcpy_event.kind = kind;
+    if (memcpy_event.kind == hipMemcpyHostToDevice) {
+        memcpy_event.hostdata.resize(size);
+        std::memcpy(memcpy_event.hostdata.data(), src, size);
+    }
+
+    event.data = std::move(memcpy_event);
+
+    pushback_event(event);
+
+    if (DEBUG) {
+        printf("[%d] \t result: %d\n", g_curr_event, result);
+    }
+    return result;    
+}
+
+hipError_t hipMemcpyWithStream(void* dst, const void* src, size_t size, hipMemcpyKind kind, hipStream_t stream)
+{
+    if (hipMemcpyWithStream_fptr == NULL) {
+        hipMemcpyWithStream_fptr = (hipError_t (*) (void*, const void*, size_t, hipMemcpyKind, hipStream_t)) dlsym(rocmLibHandle, "hipMemcpyWithStream");
+    }
+
+    if (DEBUG) {
+        printf("[%d] hooked: hipMemcpy\n", g_curr_event);
+        printf("[%d] \t dst: %p\n", g_curr_event, dst);
+        printf("[%d] \t src: %p\n", g_curr_event, src);
+        printf("[%d] \t kind: %d\n", g_curr_event, (int) kind);
+        printf("[%d] calling: hipMempcy\n", g_curr_event); 
+    }
+
+    hipError_t result = (*hipMemcpyWithStream_fptr)(dst, src, size, kind, stream);
+    gputrace_event event;
+    gputrace_event_memcpy memcpy_event;
+    event.id = g_curr_event++;
+    event.name = "hipMemcpyWithStream";
     event.rc = result;
     event.stream = hipStreamDefault;
     event.type = EVENT_MEMCPY;
@@ -807,11 +836,12 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
 
 void* __hipRegisterFatBinary(const void* data)
 {
+    g_curr_event++;
+
     if (hipRegisterFatBinary_fptr == NULL) {
         hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(rocmLibHandle, "__hipRegisterFatBinary");
     }
 
-    sqlite3_exec(g_event_db, "DROP TABLE IF EXISTS Code;", NULL, NULL, NULL);
     const std::byte* wrapper_bytes = reinterpret_cast<const std::byte*>(data);
     struct fb_wrapper_t {
         uint32_t magic;
@@ -837,6 +867,10 @@ void* __hipRegisterFatBinary(const void* data)
     std::memcpy(&fbheader, bin_bytes, sizeof(fb_header_t));
 
     const std::byte* next = bin_bytes + sizeof(fb_header_t);
+    const char* sql = "INSERT INTO Code(Path) VALUES(?)";
+	sqlite3_stmt* pStmt; 
+	sqlite3_prepare(g_event_db, sql, -1, &pStmt, 0);
+
     for(int i = 0; i < fbheader.numBundles; i++) {
         struct desc_t {
             uint64_t offset;
@@ -858,25 +892,25 @@ void* __hipRegisterFatBinary(const void* data)
         std::memcpy(triple.data(), bytes.data() + sizeof(desc), desc.tripleSize);
         triple[desc.tripleSize] = '\0';
 
-        std::string filename = std::string("./") + triple.c_str() + std::to_string(g_curr_event) + ".code";
+        std::string filename = std::string("./code/") + triple.c_str() + "-" + std::to_string(g_curr_event) + "-" + std::to_string(i) + ".code";
 
         std::FILE* code = std::fopen(filename.c_str(), "wb");
         std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
         std::fclose(code);
         getArgInfo(filename.c_str(), names_to_info);
 
-		const char* sql = "INSERT INTO Code(Idx, Triple, Path) VALUES(?, ?, ?)";
-		sqlite3_stmt* pStmt; 
-		sqlite3_prepare(g_event_db, sql, -1, &pStmt, 0);
-
-        sqlite3_bind_int(pStmt, 1, g_curr_event++);
-		sqlite3_bind_text(pStmt, 2, triple.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_text(pStmt, 3, filename.c_str(), -1, SQLITE_STATIC);
-		sqlite3_step(pStmt);
-        sqlite3_finalize(pStmt);
+        //std::printf("Inserting\n");
+        sqlite3_bind_text(pStmt, 1, filename.c_str(), -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(pStmt) != SQLITE_OK) {
+            sqlite3_errmsg(g_event_db);
+        }
+        if (sqlite3_reset(pStmt) != SQLITE_OK) {
+            sqlite3_errmsg(g_event_db);
+        }
 
         next += chunk_size;
     }
+    sqlite3_finalize(pStmt);
 
     return (*hipRegisterFatBinary_fptr)(data);
 }

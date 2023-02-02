@@ -108,7 +108,7 @@ void getArgInfo(const char* fname, std::map<std::string, std::vector<ArgInfo>>& 
                                 }
                             }
 
-                            names_to_info[kernel_name.c_str()] = arg_infos;
+                            names_to_info[kernel_name] = arg_infos;
                             arg_infos.clear();
                         }
                     }
