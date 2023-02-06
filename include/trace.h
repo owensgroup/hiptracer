@@ -19,7 +19,8 @@ enum HIP_EVENT {
     EVENT_SYNC,
     EVENT_HOST,
     EVENT_GPUEVENT,
-    EVENT_STREAM
+    EVENT_STREAM,
+    EVENT_CODE
 };
 
 struct gputrace_event_malloc {
@@ -48,6 +49,7 @@ struct gputrace_event_launch {
 };
 
 struct gputrace_event_code {
+    std::string filename;
     std::vector<std::byte> code;
 }
 

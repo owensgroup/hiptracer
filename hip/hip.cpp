@@ -49,6 +49,25 @@ void prepare_events();
 
 std::map<std::string, std::vector<ArgInfo>> names_to_info;
 
+int SQLITE_CHECK(int ans) \
+  { \
+    if (ans == SQLITE_OK) {
+        {}
+    } else if (ans == SQLITE_DONE) {
+        std::printf("SQLITE_DONE AT %s:%d (_step?)\n", __FILE__, __LINE__);
+    } else if (ans == SQLITE_ROW) {
+        std::printf("SQLITE_ROW AT %s:%d (_step?)\n", __FILE__, __LINE__);
+    } else if (ans != SQLITE_OK) {
+        std::printf("SQLITE ERROR AT %s:%d %s\n", __FILE__, __LINE__, sqlite3_errmsg(g_event_db));
+        assert(false);
+    } else {
+        std::printf("UNKNOWN SQL RESULT AT %s:%d (%d) \n", __FILE__, __LINE__, ans);
+        assert(false);
+    }
+    return ans;
+  }
+
+
 __attribute__((constructor)) void hiptracer_init()
 {
     // Setup options
@@ -131,6 +150,23 @@ std::vector<std::byte> compress_data(void *data, size_t size)
     size_t actualSize = ZSTD_compress(compressed.data(), cBuffSize, data, size, 1);
 
     return compressed;
+}
+
+int insert_code(gputrace_event event, sqlite3_stmt* pStmt)
+{
+    gputrace_event_code code_event = std::get<gputrace_event_code>(event.data);
+
+    std::FILE* code = std::fopen(code_event.filename.c_str(), "wb");
+    std::fwrite(code_event.code.data(), sizeof(std::byte), code_event.code.size(), code);
+    std::fclose(code);
+    getArgInfo(code_event.filename.c_str(), names_to_info);
+
+    int rc = SQLITE_CHECK(sqlite3_bind_text(pStmt, 1, code_event.filename.c_str(), -1, SQLITE_TRANSIENT));
+    sqlite3_step(pStmt);
+    sqlite3_reset(pStmt);
+    sqlite3_clear_bindings(pStmt);
+
+    return rc;
 }
 
 int insert_free(gputrace_event event, sqlite3_stmt* pStmt)
@@ -246,7 +282,8 @@ void prepare_events()
     const char* mallocSql = "INSERT INTO EventMalloc(Id, Stream, Ptr, Size) VALUES(?, ?, ?, ?);";
     const char* launchSql = "INSERT INTO EventLaunch(Id, Stream, KernelName, NumX, NumY, NumZ, DimX, DimY, DimZ, SharedMem, ArgData)"
                             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
-    const char* freeSql = "INSERT INTO EventFree(Id, Stream, Ptr) VALUES(?, ?, ?);"; 
+    const char* freeSql = "INSERT INTO EventFree(Id, Stream, Ptr) VALUES(?, ?, ?);";
+    const char* codeSql = "INSERT INTO Code(Path) VALUES(?)";
 
     sqlite3_prepare_v2(g_event_db, eventSql, -1, &eventStmt, 0);
     sqlite3_prepare_v2(g_event_db, memcpySql, -1, &memcpyStmt, 0);
@@ -867,9 +904,6 @@ void* __hipRegisterFatBinary(const void* data)
     std::memcpy(&fbheader, bin_bytes, sizeof(fb_header_t));
 
     const std::byte* next = bin_bytes + sizeof(fb_header_t);
-    const char* sql = "INSERT INTO Code(Path) VALUES(?)";
-	sqlite3_stmt* pStmt; 
-	sqlite3_prepare(g_event_db, sql, -1, &pStmt, 0);
 
     for(int i = 0; i < fbheader.numBundles; i++) {
         struct desc_t {
@@ -894,23 +928,25 @@ void* __hipRegisterFatBinary(const void* data)
 
         std::string filename = std::string("./code/") + triple.c_str() + "-" + std::to_string(g_curr_event) + "-" + std::to_string(i) + ".code";
 
-        std::FILE* code = std::fopen(filename.c_str(), "wb");
-        std::fwrite(bin_bytes + desc.offset, sizeof(std::byte), desc.size, code);
-        std::fclose(code);
-        getArgInfo(filename.c_str(), names_to_info);
+        gputrace_event event;
+        gputrace_event_code code_event;
 
-        //std::printf("Inserting\n");
-        sqlite3_bind_text(pStmt, 1, filename.c_str(), -1, SQLITE_TRANSIENT);
-		if (sqlite3_step(pStmt) != SQLITE_OK) {
-            sqlite3_errmsg(g_event_db);
-        }
-        if (sqlite3_reset(pStmt) != SQLITE_OK) {
-            sqlite3_errmsg(g_event_db);
-        }
+        event.id = g_curr_event++;
+        event.name = "__hipRegisterFatBinary";
+        event.rc = -1;
+        event.stream = -1;
+        event.type = EVENT_CODE;
+
+        code_event.code.reserve(desc.size);
+        std::memcpy(code_event.code.data(), bin_bytes + desc.offset, desc.size);
+        code_event.filename = filename;
+
+        event.data = std::move(code_event);
+
+        pushback_event(event);
 
         next += chunk_size;
     }
-    sqlite3_finalize(pStmt);
 
     return (*hipRegisterFatBinary_fptr)(data);
 }
