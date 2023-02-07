@@ -155,6 +155,7 @@ int get_launch(int event_id, hipStream_t& stream, std::string& kernel_name, dim3
     const void * blob = sqlite3_column_blob(pStmt, 9);
     std::memcpy(arg_data.data(), blob, args_size);
 
+    std::printf("Got blob\n");
     return rc;
 }
 
@@ -242,12 +243,9 @@ int step_event(gputrace_event replay_event)
 
         uint64_t total_argsize = 0;
 
-        std::map<std::string, std::vector<ArgInfo>> names_to_infos;
-        for (int i = 0; i < code_objects.size(); i++) {
-            getArgInfo(code_objects[i].c_str(), names_to_infos);   
-        }
         std::vector<ArgInfo> arg_infos = names_to_infos[kernel_name];
 
+        std::printf("ARG INFO SIZE %d\n", arg_infos.size());
         for (int i = 0; i < arg_infos.size(); i++) {
             total_argsize += arg_infos[i].size;
 
@@ -256,12 +254,16 @@ int step_event(gputrace_event replay_event)
                 uintptr_t value;
                 auto size = arg_infos[i].size;
                 auto offset = arg_infos[i].offset;
+                std::printf("A?\n");
+                std::printf("ARGS SIZE %d\n", args.size());
                 std::memcpy(&value, args.data() + offset, size);
 
                 auto ptr_it = allocations.find(value);
                 if (ptr_it != allocations.end()) {
                     uintptr_t replay_value = ptr_it->second;
+                    std::printf("B?\n");
                     std::memcpy(args.data() + offset, &replay_value, size);
+                    std::printf("C?\n");
                 } else {
                     std::printf("Unable to find allocation of global_buffer argument\n");
                 }
@@ -393,12 +395,6 @@ int main()
     int curr_event = 0;
     std::vector<gputrace_event> events;
 
-    std::printf("Number of events == %d\n", events.size());
-
-    if (events.size() == 0) {
-        return 0;
-    }
-
     while((line = readline("command > ")) != NULL) {
         if (line[0] == 'r') { // RUN
             const char* events_sql = "SELECT Id, Name, EventType FROM Events ORDER BY Id ASC;";
@@ -427,6 +423,7 @@ int main()
 
             sqlite3_finalize(pStmt);
 
+            std::printf("NUM EVENTS %d\n", events.size());
             // Iterate over events
             for (; curr_event < events.size(); curr_event++)
             {

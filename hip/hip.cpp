@@ -7,6 +7,8 @@
 #include <filesystem>
 #include <condition_variable>
 
+#include <boost/interprocess/streams/bufferstream.hpp>
+
 #include <dlfcn.h>
 
 #include <zstd.h>
@@ -77,8 +79,8 @@ __attribute__((constructor)) void hiptracer_init()
     EVENTDB = std::getenv("HIPTRACER_EVENTDB");
     char* SKIPHOSTDATA = std::getenv("HIPTRACER_SKIPHOSTDATA");
 
-    //std::filesystem::create_directory("./hostdata");
-    //std::filesystem::create_directory("./code");
+    std::filesystem::create_directory("./hostdata");
+    std::filesystem::create_directory("./code");
 
     if (EVENTDB == NULL) {
         EVENTDB = "./tracer-default.db";
@@ -198,8 +200,8 @@ int insert_launch(gputrace_event event, sqlite3_stmt* pStmt)
     rc = sqlite3_bind_int(pStmt, 9, launch_event.dim_blocks.z);
     rc = sqlite3_bind_int(pStmt, 10, launch_event.shared_mem_bytes);
 
-    rc = sqlite3_bind_blob(pStmt, 11, launch_event.argdata.data(), launch_event.argdata.size(), SQLITE_STATIC);
-
+    std::printf("Inserting blob with size %d\n", launch_event.argdata.size());
+    rc = sqlite3_bind_blob(pStmt, 11, launch_event.argdata.data(), launch_event.argdata.size(), SQLITE_TRANSIENT);
 
     rc = sqlite3_step(pStmt);
     sqlite3_reset(pStmt);
@@ -307,7 +309,9 @@ void prepare_events()
             gputrace_event event;
             events_queue.try_pop(event);
 
-            insert_event(event, eventStmt);
+            if (event.type != EVENT_CODE) {
+                insert_event(event, eventStmt);
+            }
             if (event.type == EVENT_MALLOC) { 
                 insert_malloc(event, mallocStmt);
             } else if (event.type == EVENT_MEMCPY) {
@@ -765,6 +769,7 @@ hipError_t hipLaunchKernel(const void* function_address,
     
     std::vector<ArgInfo> arg_infos = names_to_info[kernel_name.c_str()];
 
+    std::printf("NAMES INFO SIZE %d\n", names_to_info.size());
     uint64_t total_size = 0;
     if (arg_infos.size() > 0) {
         total_size = arg_infos[arg_infos.size() - 1].offset + arg_infos[arg_infos.size() - 1].size;
@@ -930,21 +935,30 @@ void* __hipRegisterFatBinary(const void* data)
         std::memcpy(triple.data(), bytes.data() + sizeof(desc), desc.tripleSize);
         triple[desc.tripleSize] = '\0';
 
-        std::string filename = std::string("./code/") + triple.c_str() + "-" + std::to_string(g_curr_event) + "-" + std::to_string(i) + ".code";
+        std::string s(triple.c_str());
+        if (s.find("host") != std::string::npos) {
+            next += chunk_size;
+            continue;
+        }
+
+        std::string filename = std::string("./code/") + s + "-" + std::to_string(g_curr_event) + "-" + std::to_string(i) + ".code";
+
+        std::string image{reinterpret_cast<const char*>(
+          reinterpret_cast<uintptr_t>(bin_bytes) + desc.offset), desc.size};
+
+        std::istringstream is(image);
+        getArgInfo(is, names_to_info);
 
         gputrace_event event;
         gputrace_event_code code_event;
 
+        code_event.filename = filename;
+        code_event.code = image;
+
         event.id = g_curr_event++;
-        event.name = "__hipRegisterFatBinary";
         event.rc = hipSuccess;
         event.stream = hipStreamDefault;
         event.type = EVENT_CODE;
-
-        code_event.code.reserve(desc.size);
-        std::memcpy(code_event.code.data(), bin_bytes + desc.offset, desc.size);
-        getArgInfo(filename.c_str(), names_to_info);
-        code_event.filename = filename;
 
         event.data = std::move(code_event);
 

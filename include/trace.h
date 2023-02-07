@@ -50,7 +50,7 @@ struct gputrace_event_launch {
 
 struct gputrace_event_code {
     std::string filename;
-    std::vector<std::byte> code;
+    std::string code;
 };
 
 struct gputrace_event {

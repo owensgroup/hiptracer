@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <string>
 #include <map>
+#include <sstream>
 
 using namespace ELFIO;
 
@@ -17,16 +18,31 @@ struct ArgInfo {
     std::string access;
 };
 
+
+void getArgInfo(elfio& reader, std::map<std::string, std::vector<ArgInfo>>& names_to_info);
+
+void getArgInfo(std::istream& stream, std::map<std::string, std::vector<ArgInfo>>& names_to_info)
+{
+    elfio reader;
+    if (!reader.load(stream)) {
+        std::cout << " Loading stream failed" << std::endl;
+    }
+
+    getArgInfo(reader, names_to_info);
+}
+
 void getArgInfo(const char* fname, std::map<std::string, std::vector<ArgInfo>>& names_to_info)
 {
     elfio reader;
 	
     if (!reader.load(fname) ) {
-        //std::cout << "Unable to find elf file" << std::endl;
-    } else {
-    	//std::cout << "Found ELF file " << fname << std::endl;
+        std::cout << "Unable to find elf file" << std::endl;
     }
+    getArgInfo(reader, names_to_info);
+}
 
+void getArgInfo(elfio& reader, std::map<std::string, std::vector<ArgInfo>>& names_to_info)
+{
     // Print ELF file sections info
     Elf_Half sec_num = reader.sections.size(); 
 	//std::cout <<" Sections " << sec_num << std::endl;
