@@ -243,6 +243,10 @@ int step_event(gputrace_event replay_event)
 
         uint64_t total_argsize = 0;
 
+        std::map<std::string, std::vector<ArgInfo>> names_to_infos;
+        for (int i = 0; i < code_objects.size(); i++) {
+            oldGetArgInfo(code_objects[i].c_str(), names_to_infos);
+        }
         std::vector<ArgInfo> arg_infos = names_to_infos[kernel_name];
 
         std::printf("ARG INFO SIZE %d\n", arg_infos.size());
@@ -257,6 +261,7 @@ int step_event(gputrace_event replay_event)
                 std::printf("A?\n");
                 std::printf("ARGS SIZE %d\n", args.size());
                 std::memcpy(&value, args.data() + offset, size);
+                std::printf("Found %px\n", value);
 
                 auto ptr_it = allocations.find(value);
                 if (ptr_it != allocations.end()) {
