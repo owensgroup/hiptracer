@@ -393,6 +393,12 @@ int main()
     int curr_event = 0;
     std::vector<gputrace_event> events;
 
+    std::printf("Number of events == %d\n", events.size());
+
+    if (events.size() == 0) {
+        return 0;
+    }
+
     while((line = readline("command > ")) != NULL) {
         if (line[0] == 'r') { // RUN
             const char* events_sql = "SELECT Id, Name, EventType FROM Events ORDER BY Id ASC;";
@@ -453,9 +459,20 @@ int main()
             }
         }
 
-        if (line[0] == 's') { // STEP
+        if (line[0] == 'n') { // STEP
             gputrace_event replay_event = events[curr_event];
             step_event(replay_event);
+        }
+
+        if (line[0] == 's') { // 
+            // for allocation in allocations
+            // do copy allocation to disk
+            // save stream mappings
+            std::printf("Saving device state at event %d\n", events[i].id);
+        }
+
+        if (line[0] == 'l') {
+            std::printf("Loading device state\n");
         }
     }
 
