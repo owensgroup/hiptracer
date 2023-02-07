@@ -51,7 +51,7 @@ struct gputrace_event_launch {
 struct gputrace_event_code {
     std::string filename;
     std::vector<std::byte> code;
-}
+};
 
 struct gputrace_event {
     uint64_t id;

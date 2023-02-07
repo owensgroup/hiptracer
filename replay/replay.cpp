@@ -468,7 +468,7 @@ int main()
             // for allocation in allocations
             // do copy allocation to disk
             // save stream mappings
-            std::printf("Saving device state at event %d\n", events[i].id);
+            std::printf("Saving device state at event %d\n", events[curr_event].id);
         }
 
         if (line[0] == 'l') {

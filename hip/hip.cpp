@@ -77,8 +77,8 @@ __attribute__((constructor)) void hiptracer_init()
     EVENTDB = std::getenv("HIPTRACER_EVENTDB");
     char* SKIPHOSTDATA = std::getenv("HIPTRACER_SKIPHOSTDATA");
 
-    std::filesystem::create_directory("./hostdata");
-    std::filesystem::create_directory("./code");
+    //std::filesystem::create_directory("./hostdata");
+    //std::filesystem::create_directory("./code");
 
     if (EVENTDB == NULL) {
         EVENTDB = "./tracer-default.db";
@@ -156,10 +156,10 @@ int insert_code(gputrace_event event, sqlite3_stmt* pStmt)
 {
     gputrace_event_code code_event = std::get<gputrace_event_code>(event.data);
 
+    std::printf("Opening filename %s\n", code_event.filename.c_str());
     std::FILE* code = std::fopen(code_event.filename.c_str(), "wb");
     std::fwrite(code_event.code.data(), sizeof(std::byte), code_event.code.size(), code);
     std::fclose(code);
-    getArgInfo(code_event.filename.c_str(), names_to_info);
 
     int rc = SQLITE_CHECK(sqlite3_bind_text(pStmt, 1, code_event.filename.c_str(), -1, SQLITE_TRANSIENT));
     sqlite3_step(pStmt);
@@ -276,6 +276,7 @@ void prepare_events()
     sqlite3_stmt* memcpyStmt = NULL;
     sqlite3_stmt* freeStmt = NULL;
     sqlite3_stmt* launchStmt = NULL;
+    sqlite3_stmt* codeStmt = NULL;
 
     const char* eventSql = "INSERT INTO Events(EventType, Name, Rc, Stream, Id) VALUES(?, ?, ?, ?, ?);";
     const char* memcpySql = "INSERT INTO EventMemcpy(Id, Stream, Dst, Src, Size, Kind, HostData) VALUES(?, ?, ?, ?, ?, ?, ?);";
@@ -290,6 +291,7 @@ void prepare_events()
     sqlite3_prepare_v2(g_event_db, mallocSql, -1, &mallocStmt, 0);
     sqlite3_prepare_v2(g_event_db, launchSql, -1, &launchStmt, 0);
     sqlite3_prepare_v2(g_event_db, freeSql, -1, &freeStmt, 0);
+    sqlite3_prepare_v2(g_event_db, codeSql, -1, &codeStmt, 0);
 
     char* errmsg = NULL;
     sqlite3_exec(g_event_db, "BEGIN TRANSACTION", NULL, NULL, &errmsg);
@@ -314,6 +316,8 @@ void prepare_events()
                 insert_free(event, freeStmt);
             } else if (event.type == EVENT_LAUNCH) {
                 insert_launch(event, launchStmt);
+            } else if (event.type == EVENT_CODE) {
+                insert_code(event, codeStmt);
             }
 			if (progress != NULL) {
 				progress->update();
@@ -933,12 +937,13 @@ void* __hipRegisterFatBinary(const void* data)
 
         event.id = g_curr_event++;
         event.name = "__hipRegisterFatBinary";
-        event.rc = -1;
-        event.stream = -1;
+        event.rc = hipSuccess;
+        event.stream = hipStreamDefault;
         event.type = EVENT_CODE;
 
         code_event.code.reserve(desc.size);
         std::memcpy(code_event.code.data(), bin_bytes + desc.offset, desc.size);
+        getArgInfo(filename.c_str(), names_to_info);
         code_event.filename = filename;
 
         event.data = std::move(code_event);
