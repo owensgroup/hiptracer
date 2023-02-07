@@ -1,6 +1,7 @@
 #include "elfio/elfio.hpp"
 
 #include "msgpuck.h"
+#include "sqlite3.h"
 
 #include <iostream>
 #include <cstdio>
@@ -10,7 +11,31 @@
 
 using namespace ELFIO;
 
+void getArgInfo(elfio& reader, sqlite3* event_db, int curr_event);
+
+void getArgInfo(std::istream& stream, sqlite3* event_db, int curr_event)
+{
+    elfio reader;
+    if (!reader.load(stream)) {
+        std::cout << " Loading stream failed" << std::endl;
+    }
+
+    getArgInfo(reader, event_db, curr_event);
+}
+
+void getArgInfo(const char* fname, sqlite3* event_db, int curr_event)
+{
+    elfio reader;
+	
+    if (!reader.load(fname) ) {
+        std::cout << "Unable to find elf file" << std::endl;
+    }
+    getArgInfo(reader, event_db, curr_event);
+}
+
+
 struct ArgInfo {
+    int index;
     std::string address_space;
     uint64_t size;
     uint64_t offset;
@@ -18,34 +43,18 @@ struct ArgInfo {
     std::string access;
 };
 
-
-void getArgInfo(elfio& reader, std::map<std::string, std::vector<ArgInfo>>& names_to_info);
-
-void getArgInfo(std::istream& stream, std::map<std::string, std::vector<ArgInfo>>& names_to_info)
-{
-    elfio reader;
-    if (!reader.load(stream)) {
-        std::cout << " Loading stream failed" << std::endl;
-    }
-
-    getArgInfo(reader, names_to_info);
-}
-
-void getArgInfo(const char* fname, std::map<std::string, std::vector<ArgInfo>>& names_to_info)
-{
-    elfio reader;
-	
-    if (!reader.load(fname) ) {
-        std::cout << "Unable to find elf file" << std::endl;
-    }
-    getArgInfo(reader, names_to_info);
-}
-
-void getArgInfo(elfio& reader, std::map<std::string, std::vector<ArgInfo>>& names_to_info)
+void getArgInfo(elfio& reader, sqlite3* event_db, int curr_event)
 {
     // Print ELF file sections info
     Elf_Half sec_num = reader.sections.size(); 
 	//std::cout <<" Sections " << sec_num << std::endl;
+
+    sqlite3_stmt* pStmt = NULL;
+    char* sql = "INSERT INTO ArgInfo(Id, KernelName, Ind, AddressSpace, Size, Offset, ValueKind, Access) VALUES(?, ?, ?, ?, ?, ?, ?, ?);";
+
+    if (sqlite3_prepare_v2(event_db, sql, -1, &pStmt, 0) != SQLITE_OK) {
+        std::printf("SQLITE_ERR %s\n", sqlite3_errmsg(event_db));
+    }
 
     for ( int i = 0; i < sec_num; ++i ) {
         section* psec = reader.sections[i];
@@ -72,6 +81,7 @@ void getArgInfo(elfio& reader, std::map<std::string, std::vector<ArgInfo>>& name
                         uint32_t num_kernels = mp_decode_array(&r);
                         std::string kernel_name;
                         std::vector<ArgInfo> arg_infos;
+                        size_t total_size = 0;
 
                         for (int i = 0; i < num_kernels; i++) {
                             uint32_t kern_map_size = mp_decode_map(&r);
@@ -86,6 +96,7 @@ void getArgInfo(elfio& reader, std::map<std::string, std::vector<ArgInfo>>& name
                                         uint32_t arg_map_size = mp_decode_map(&r);
                                         ArgInfo info;
                                         for (int i = 0; i < arg_map_size; i++) {
+                                            info.index = i;
                                             uint32_t arg_len;
                                             const char* arg_key = mp_decode_str(&r, &arg_len);
                                             
@@ -95,6 +106,7 @@ void getArgInfo(elfio& reader, std::map<std::string, std::vector<ArgInfo>>& name
                                                 info.address_space = std::string(address_space, addr_len);
                                             } else if (std::string(arg_key, arg_len) == ".size") {
                                                 info.size = mp_decode_uint(&r);
+                                                total_size += info.size;
                                             } else if (std::string(arg_key, arg_len) == ".offset") {
                                                 info.offset = mp_decode_uint(&r);
                                             } else if (std::string(arg_key, arg_len) == ".value_kind") {
@@ -110,9 +122,9 @@ void getArgInfo(elfio& reader, std::map<std::string, std::vector<ArgInfo>>& name
                                             } else {
                                                 mp_next(&r);
                                             }
-                                        }
+                                        } // end for
                                         arg_infos.push_back(info);
-                                    }
+                                    } // end for
                                     
                                 } else if (std::string(kern_key, kkey_len) == ".name") {
                                     uint32_t kkern_len = 0;
@@ -123,9 +135,12 @@ void getArgInfo(elfio& reader, std::map<std::string, std::vector<ArgInfo>>& name
                                     mp_next(&r); // Skip value
                                 }
                             }
+                            sqlite3_bind_int(pStmt, 1, curr_event);
+                            sqlite3_bind_text(pStmt, 2, kernel_name.c_str(), -1, SQLITE_STATIC);
+                            sqlite3_bind_int(pStmt, 5, total_size);
 
-                            names_to_info[kernel_name] = arg_infos;
-                            arg_infos.clear();
+                            sqlite3_step(pStmt);
+                            sqlite3_reset(pStmt);
                         }
                     }
                     else {
@@ -135,4 +150,5 @@ void getArgInfo(elfio& reader, std::map<std::string, std::vector<ArgInfo>>& name
             }
         }
     }
+    sqlite3_finalize(pStmt);
 }

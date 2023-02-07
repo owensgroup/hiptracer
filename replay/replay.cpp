@@ -387,10 +387,6 @@ int main()
 
     std::printf("Code objects size %d\n", code_objects.size());
 
-    for (int i = 0; i < code_objects.size(); i++) {
-        getArgInfo(code_objects[i].c_str(), names_to_infos);
-    }
-
     char* line = NULL;
     int curr_event = 0;
     std::vector<gputrace_event> events;
