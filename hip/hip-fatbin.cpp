@@ -56,18 +56,17 @@ void* __hipRegisterFatBinary(const void* data)
     if (hipRegisterFatBinary_fptr == NULL) {
         hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(rocmLibHandle, "__hipRegisterFatBinary");
     }
+    if (data == NULL) {
+        return (*hipRegisterFatBinary_fptr)(data);
+    }
 
-    const std::byte* wrapper_bytes = reinterpret_cast<const std::byte*>(data);
-    struct fb_wrapper_t {
+    struct fb_wrapper {
         uint32_t magic;
         uint32_t version;
         void* binary;
         void* unused;
     };
-    fb_wrapper_t fbwrapper;
-    std::memcpy(&fbwrapper, wrapper_bytes, sizeof(fb_wrapper_t));
-
-    const std::byte* bin_bytes = reinterpret_cast<const std::byte*>(fbwrapper.binary);
+    fb_wrapper* fbwrapper = static_cast<fb_wrapper*>(data);
     typedef struct {
         const char magic[sizeof(CLANG_OFFLOAD_BUNDLER_MAGIC) - 1] = 
             { '_', '_', 
@@ -76,55 +75,44 @@ void* __hipRegisterFatBinary(const void* data)
               'B', 'U', 'N', 'D', 'L', 'E',
               '_', '_' };
         uint64_t numBundles; 
-    } fb_header_t;
+    } fb_header;
 
-    fb_header_t fbheader;
-    std::memcpy(&fbheader, bin_bytes, sizeof(fb_header_t));
+    fb_header* fbheader = static_cast<fb_header*>(fbwrapper->binary);
 
-    const std::byte* next = bin_bytes + sizeof(fb_header_t);
-
+    const void* next = fbwrapper->binary + sizeof(fb_header);
     for(int i = 0; i < fbheader.numBundles; i++) {
-        struct desc_t {
+        struct code_desc {
             uint64_t offset;
             uint64_t size;
             uint64_t tripleSize;
         };
 
-        desc_t desc;
-        std::memcpy(&desc, next, sizeof(desc));
+        code_desc* descriptor = static_cast<code_desc*>(next);
 
         // Determine chunk size 
-        size_t chunk_size = sizeof(desc) + desc.tripleSize;
-        std::vector<std::byte> bytes(chunk_size);   
+        size_t chunk_size = sizeof(code_desc) + descriptor->tripleSize;
 
-        std::memcpy(bytes.data(), next, chunk_size);
+        const char* unterm_kernel_name = static_cast<const char*>(next + sizeof(code_desc));
+        std::string_view kernel_name(unterm_kernel_name, descriptor->tripleSize);
 
-        std::string triple;
-        triple.reserve(desc.tripleSize + 1);
-        std::memcpy(triple.data(), bytes.data() + sizeof(desc), desc.tripleSize);
-        triple[desc.tripleSize] = '\0';
-
-        std::string s(triple.c_str());
-        if (s.find("host") != std::string::npos) {
+        if (kernel_name.find("host") != std::string_view::npos) {
             next += chunk_size;
             continue;
         }
 
-        std::string filename = std::string("./code/") + s + "-" + std::to_string(g_curr_event) + "-" + std::to_string(i) + ".code";
+        //std::string filename = std::string_view("./code/") + kernel_name + "-" + std::to_string(g_curr_event) + "-" + std::to_string(i) + ".code";
         //std::printf("Getting %s\n", filename.c_str());
 
-        std::string image{reinterpret_cast<const char*>(
-          reinterpret_cast<uintptr_t>(bin_bytes) + desc.offset), desc.size};
+        // Make a copy of the code object here. 
+        std::string image{static_cast<const char*>(next + descriptor->offset), descriptor->size};
+        std::istringstream is(image); // FIXME: Makes a second copy?
 
-        std::istringstream is(image);
-        sqlite3_exec(g_arginfo_db, "BEGIN TRANSACTION", NULL, NULL, NULL);
         getArgInfo(is, g_arginfo_db, g_curr_event++);
-        sqlite3_exec(g_arginfo_db, "END TRANSACTION", NULL, NULL, NULL);
 
         gputrace_event event;
         gputrace_event_code code_event;
 
-        code_event.filename = filename;
+        //code_event.filename = filename;
         code_event.code = image;
 
         event.id = g_curr_event;
