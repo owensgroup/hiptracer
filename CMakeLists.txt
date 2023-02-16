@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
-set(CMAKE_BUILD_TYPE Debug)
-project(hiptracer LANGUAGES C CXX HIP)
+project(hiptracer LANGUAGES C CXX HIP CUDA)
 set(CMAKE_CXX_STANDARD 17)
 
 add_library(hipcapture SHARED hip/hip.cpp
+                       hip/hip-fatbin.cpp
                        hip/sqlite3.c
                        hip/msgpuck.c
                        hip/hints.c)
@@ -12,6 +12,11 @@ target_include_directories(hipcapture PUBLIC "/opt/rocm/include")
 target_include_directories(hipcapture PUBLIC "/opt/rocm/llvm/include")
 
 target_link_libraries(hipcapture dl zstd pthread)
+
+add_library(cudacapture SHARED cuda/cuda.cpp
+                               hip/sqlite3.c)
+target_include_directories(cudacapture PUBLIC "include")
+target_include_directories(cudacapture PUBLIC ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 
 set_source_files_properties (replay/replay.cpp PROPERTIES LANGUAGE HIP) 
 add_executable(replay replay/replay.cpp hip/sqlite3.c hip/msgpuck.c hip/hints.c)
