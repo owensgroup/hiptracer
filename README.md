@@ -79,20 +79,15 @@ Capture sizes may be inaccurate if replay doesn't function.
 Replay indicates current status of replay tool with the program.
 "Slow?" indicates the program was slow to capture. Likely due to a large amount of host data.
 
-| Example Program | Capture Size | Replay Functionality | Slow? |
-| ----------------| ------------ | -------------------  | ----- |
-| `vectoradd_hip` |    8.1M       | ⭕ | ❌ |
-| `cuda-stream`   |    32K        | ❌ | ❌ |
-| `strided-access` | 84K          | ❌ | ❌ |
-| `reduction`     |  201M         | ❌ | ⭕ |
-| `kripke`        |   262M        | ❌ | ⭕ |
-
-# Compression
-(WIP)
+| Example Program | Capture Size | Replay Functionality |
+| ----------------| ------------ | -------------------  |
+| `vectoradd_hip` |    8.1M       | ⭕ |
+| `cuda-stream`   |    32K        | ❌ |
+| `strided-access` | 84K          | ❌ |
+| `reduction`     |  201M         | ❌ |
+| `kripke`        |   262M        | ❌ |
 
 # Issues
 
-* Replay is very problematic right now, only really works correctly with vectoradd
+* Replay is very problematic right now, need to add Synchronize events
 * Multiple devices do not work
-* Code object detection is very buggy, so if you have multiple AMD devices, the right GPU code might not be saved. (WIP)
-
