@@ -6,7 +6,6 @@
 #include <string>
 #include <filesystem>
 #include <condition_variable>
-#include <map>
 
 #include <dlfcn.h>
 
@@ -14,7 +13,6 @@
 
 // event_t, header_t, data_t
 #include "trace.h"
-// ArgInfo, getArgInfo
 
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
@@ -24,13 +22,14 @@
 #include "progressbar.h"
 #include "atomic_queue/atomic_queue.h"
 
-#define MAX_ELEMS 5124
+#define MAX_ELEMS 8192
 extern atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
 extern std::atomic<int> g_curr_event;
 extern sqlite3 *g_event_db;
 extern sqlite3 *g_arginfo_db;
 extern void* rocmLibHandle;
 extern std::condition_variable events_available;
+extern void pushback_event(gputrace_event);
 
 atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
 
@@ -52,14 +51,6 @@ std::mutex mx;
 std::unique_lock<std::mutex> lock(mx);
 std::condition_variable events_available;
 bool g_library_loaded = true;
-
-std::map<std::string, size_t> kernel_arg_sizes;
-
-using atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> = gputrace_queue;
-gputrace_queue& get_events_queue() {
-    static gputrace_queue events_queue;
-    return events_queue;
-} 
 
 void prepare_events();
 
@@ -107,21 +98,20 @@ __attribute__((constructor)) void hiptracer_init()
     rocmLibHandle = dlopen("/opt/rocm/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
     if (rocmLibHandle == NULL) {
         std::printf("Unable to open libamdhip64.so\n");
-        std::exit(-1);
+        //std::exit(-1);
     }
     
     if (sqlite3_open(EVENTDB, &g_event_db) != SQLITE_OK) {
         std::printf("Unable to open event database: %s\n", sqlite3_errmsg(g_event_db));
         sqlite3_close(g_event_db);
-        std::exit(-1);
+        //std::exit(-1);
     }
     if (sqlite3_open("./code/arginfo.db", &g_arginfo_db) != SQLITE_OK) {
         std::printf("Unable to open arginfo database: %s\n", sqlite3_errmsg(g_arginfo_db));
         sqlite3_close(g_arginfo_db);
-        std::exit(-1);
+        //std::exit(-1);
     }
  
-    std::printf("Opened database\n");
     sqlite3_config(SQLITE_CONFIG_MULTITHREAD);
     
 
@@ -146,13 +136,9 @@ __attribute__((constructor)) void hiptracer_init()
                                      "DROP TABLE IF EXISTS ArgInfo;"
                               "CREATE TABLE ArgInfo(Id INTEGER PRIMARY KEY, KernelName TEXT, Ind INT, AddressSpace TEXT, Size INT, Offset INT, ValueKind TEXT, Access TEXT);";
     if(sqlite3_exec(g_event_db, create_events_sql, 0, 0, NULL)) {
-        std::printf("Failed to create Events table: %s\n", sqlite3_errmsg(g_event_db));
-        std::printf("???\n");
         std::exit(EXIT_FAILURE);
     }
-    if(sqlite3_exec(g_arginfo_db, create_arginfo_sql, 0, 0, NULL)) {
-        std::printf("Failed to create arginfo table: %s\n", sqlite3_errmsg(g_arginfo_db));
-        std::printf("???\n");
+    if(sqlite3_exec(g_arginfo_db, create_arginfo_sql, 0, 0, NULL)) {  
         std::exit(EXIT_FAILURE);
     }
 
@@ -164,31 +150,6 @@ __attribute__((destructor)) void hiptracer_deinit()
 {
     g_library_loaded = false;
     events_available.notify_all();
-
-    /*
-    sqlite3_stmt* arginfoStmt;
-    sqlite3_stmt* eventStmt;
-    const char* arginfoSql = "SELECT Id, KernelName, Ind, AddressSpace, Size, Offset, ValueKind, Access FROM ArgInfo;";
-    char* eventSql = "INSERT INTO ArgInfo(Id, KernelName, Ind, AddressSpace, Size, Offset, ValueKind, Access) VALUES(?, ?, ?, ?, ?, ?, ?, ?);";
-    sqlite3_prepare_v2(g_arginfo_db, arginfoSql, -1, &arginfoStmt, 0);
-    sqlite3_prepare_v2(g_event_db, eventSql, -1, &eventStmt, 0);
-  
-    while(sqlite3_step(arginfoStmt) == SQLITE_ROW) {
-        sqlite3_bind_int(eventStmt, 1, sqlite3_column_int(arginfoStmt, 0));
-        sqlite3_bind_text(eventStmt, 2, (char*)sqlite3_column_text(arginfoStmt, 1), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(eventStmt, 3, sqlite3_column_int(arginfoStmt, 2));
-        sqlite3_bind_text(eventStmt, 4, (char*)sqlite3_column_text(arginfoStmt, 3), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(eventStmt, 5, sqlite3_column_int(arginfoStmt, 4));
-        sqlite3_bind_int(eventStmt, 6, sqlite3_column_int(arginfoStmt, 5));
-        sqlite3_bind_text(eventStmt, 7, (char*)sqlite3_column_text(arginfoStmt, 6), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(eventStmt, 8, (char*)sqlite3_column_text(arginfoStmt, 7), -1, SQLITE_TRANSIENT);
-
-        sqlite3_step(eventStmt);
-        sqlite3_reset(eventStmt);
-    }
-    sqlite3_finalize(eventStmt);
-    sqlite3_finalize(arginfoStmt);
-    */
 
     sqlite3_close(g_event_db);
     sqlite3_close(g_arginfo_db);
@@ -350,6 +311,7 @@ void prepare_events()
     char* errmsg = NULL;
     sqlite3_exec(g_event_db, "BEGIN TRANSACTION", NULL, NULL, &errmsg);
 
+    std::printf("Prepared statements\n");
 	progressbar* progress = NULL;
     while(g_library_loaded) {
         while(!events_queue.was_empty()) {      
@@ -359,6 +321,7 @@ void prepare_events()
 				progress = new progressbar(events_remaining);
             }
             gputrace_event event;
+            
             events_queue.try_pop(event);
 
             if (event.type != EVENT_CODE) {
@@ -399,7 +362,7 @@ void pushback_event(gputrace_event event)
 {
     if (events_queue.was_full()) {
         std::printf("Unable to add event, event queue full\nUse a larger buffer size or allocate more threads for event insertion\n");
-        std::exit(-1);
+        //std::exit(-1);
     } else {
         events_queue.push(event);
         events_available.notify_one();
@@ -412,13 +375,12 @@ void pushback_event(gputrace_event event)
    ****
 */
 
-extern "C" {
-
 hipError_t  (*hipFree_fptr)(void*) = NULL;
 hipError_t  (*hipMalloc_fptr)(void**, size_t) = NULL;
 hipError_t  (*hipMemcpy_fptr)(void*, const void*, size_t, hipMemcpyKind) = NULL;
-
 hipError_t  (*hipGetDeviceProperties_fptr)(hipDeviceProp_t*,int) = NULL;
+
+hipError_t  (*hipSetupArgument_fptr)(const void* arg, size_t size, size_t offset) = NULL;
 hipChannelFormatDesc (*hipCreateChannelDesc_fptr)(int x, int y, int z, int w, hipChannelFormatKind f) = NULL;
 
 hipError_t (*hipStreamSynchronize_fptr)(hipStream_t) = NULL;
@@ -441,6 +403,7 @@ hipError_t (*hipEventQuery_fptr)(hipEvent_t event) = NULL;
 hipError_t (*hipMemcpyWithStream_fptr)(void*, const void*, size_t, hipMemcpyKind, hipStream_t) = NULL;
 
 
+extern "C" {
 hipError_t hipStreamCreateWithFlags(hipStream_t* stream, unsigned flags) {
     if (hipStreamCreateWithFlags_fptr == NULL) {
         hipStreamCreateWithFlags_fptr = (hipError_t (*) (hipStream_t*, unsigned)) dlsym(rocmLibHandle, "hipStreamCreateWithFlags");
@@ -470,7 +433,7 @@ hipError_t hipStreamCreate(hipStream_t* stream)
     }
 
     hipError_t result = (*hipStreamCreate_fptr)(stream);
-
+ 
     gputrace_event event;
 
     event.id = g_curr_event++;
@@ -514,6 +477,8 @@ hipError_t hipGetDevice(int* deviceId) {
 
     hipError_t result = (*hipGetDevice_fptr)(deviceId);
 
+    //gputrace_event* event;
+    
     gputrace_event event;
 
     event.id = g_curr_event++;
@@ -535,6 +500,8 @@ hipError_t hipGetDeviceCount(int* count) {
 
     hipError_t result = (*hipGetDeviceCount_fptr)(count);
 
+    //gputrace_event* event;
+
     gputrace_event event;
     event.id = g_curr_event++;
     event.name = "hipGetDeviceCount";
@@ -553,6 +520,8 @@ hipError_t hipStreamSynchronize(hipStream_t stream)
     }
 
     hipError_t result = (*hipStreamSynchronize_fptr)(stream);
+
+    //gputrace_event* event;
 
     gputrace_event event;
 
@@ -575,6 +544,8 @@ hipError_t hipDeviceSynchronize()
 
     hipError_t result = (*hipDeviceSynchronize_fptr)();
 
+    //gputrace_event* event;
+
     gputrace_event event;
 
     event.id = g_curr_event++;
@@ -596,6 +567,8 @@ hipError_t hipFree(void *p)
 
     hipError_t result = (*hipFree_fptr)(p);
 
+    //gputrace_event* event;
+
     gputrace_event event;
     gputrace_event_free free_event;
 
@@ -607,7 +580,7 @@ hipError_t hipFree(void *p)
 
     free_event.p = (uint64_t) p;
 
-    event.data = free_event;
+    event.data = std::move(free_event);
     pushback_event(event);
 
     return result;
@@ -635,8 +608,7 @@ hipError_t hipMalloc(void** p, size_t size)
         malloc_event.p = (uint64_t) *p;
     }
     malloc_event.size = size;
-
-    event.data = malloc_event;
+    event.data = std::move(malloc_event);
 
     pushback_event(event);
 
@@ -650,8 +622,10 @@ hipError_t hipMemcpy(void *dst, const void *src, size_t size, hipMemcpyKind kind
     }
 
     hipError_t result = (*hipMemcpy_fptr)(dst, src, size, kind);
+
     gputrace_event event;
     gputrace_event_memcpy memcpy_event;
+
     event.id = g_curr_event++;
     event.name = "hipMemcpy";
     event.rc = result;
@@ -681,8 +655,11 @@ hipError_t hipMemcpyWithStream(void* dst, const void* src, size_t size, hipMemcp
     }
 
     hipError_t result = (*hipMemcpyWithStream_fptr)(dst, src, size, kind, stream);
+    //gputrace_event* event;
+
     gputrace_event event;
     gputrace_event_memcpy memcpy_event;
+
     event.id = g_curr_event++;
     event.name = "hipMemcpyWithStream";
     event.rc = result;
@@ -713,6 +690,7 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
 
     hipError_t result = (*hipGetDeviceProperties_fptr)(p_prop, device);
 
+    //gputrace_event* event;
     gputrace_event event;
     event.id = g_curr_event++;
     event.name = "hipGetDeviceProperties";
@@ -724,7 +702,6 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
 
     return result;
 }
-
 /* Unhandled
 hipError_t hipLaunchKernelGGL;
 hipError_t hipGetDeviceCount;

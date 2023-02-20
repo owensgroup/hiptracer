@@ -10,17 +10,19 @@
 #include "sqlite3.h"
 
 #include "atomic_queue/atomic_queue.h"
+#include "flat_hash_map.hpp"
 
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 
-#define MAX_ELEMS 5124
+#define MAX_ELEMS 8192
 extern atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
 extern std::atomic<int> g_curr_event;
 extern sqlite3 *g_event_db;
 extern sqlite3 *g_arginfo_db;
 extern void* rocmLibHandle;
-extern std::condition_variable events_available;
+extern void pushback_event(gputrace_event);
+ska::flat_hash_map<uint64_t, SizeOffset> kernel_arg_sizes;
 
 extern "C" {
 void*       (*hipRegisterFatBinary_fptr)(const void*) = NULL;
@@ -35,23 +37,12 @@ const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
 #define CLANG_OFFLOAD_BUNDLER_MAGIC "__CLANG_OFFLOAD_BUNDLE__"
 #define AMDGCN_AMDHSA_TRIPLE "hip-amdgcn-amd-amdhsa"
 
-//FIXME
-void pushback_event(gputrace_event event)
-{
-    if (events_queue.was_full()) {
-        std::printf("Unable to add event, event queue full\nUse a larger buffer size or allocate more threads for event insertion\n");
-        std::exit(-1);
-    } else {
-        events_queue.push(event);
-        events_available.notify_one();
-    }
-}
-
-
-
 void* __hipRegisterFatBinary(const void* data)
 {
-    g_curr_event++;
+    int register_event_id = g_curr_event++;
+    if (register_event_id % 100 == 0) {
+        std::printf("%d\n", register_event_id);
+    }
 
     if (hipRegisterFatBinary_fptr == NULL) {
         hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(rocmLibHandle, "__hipRegisterFatBinary");
@@ -66,7 +57,7 @@ void* __hipRegisterFatBinary(const void* data)
         void* binary;
         void* unused;
     };
-    fb_wrapper* fbwrapper = static_cast<fb_wrapper*>(data);
+    const fb_wrapper* fbwrapper = static_cast<const fb_wrapper*>(data);
     typedef struct {
         const char magic[sizeof(CLANG_OFFLOAD_BUNDLER_MAGIC) - 1] = 
             { '_', '_', 
@@ -77,43 +68,43 @@ void* __hipRegisterFatBinary(const void* data)
         uint64_t numBundles; 
     } fb_header;
 
-    fb_header* fbheader = static_cast<fb_header*>(fbwrapper->binary);
+    const fb_header* fbheader = static_cast<const fb_header*>(fbwrapper->binary);
 
-    const void* next = fbwrapper->binary + sizeof(fb_header);
-    for(int i = 0; i < fbheader.numBundles; i++) {
+    const void* next = static_cast<const char*>(fbwrapper->binary) + sizeof(fb_header);
+    for(int i = 0; i < fbheader->numBundles; i++) {
         struct code_desc {
             uint64_t offset;
             uint64_t size;
             uint64_t tripleSize;
         };
 
-        code_desc* descriptor = static_cast<code_desc*>(next);
+        const code_desc* descriptor = static_cast<const code_desc*>(next);
 
         // Determine chunk size 
         size_t chunk_size = sizeof(code_desc) + descriptor->tripleSize;
 
-        const char* unterm_kernel_name = static_cast<const char*>(next + sizeof(code_desc));
-        std::string_view kernel_name(unterm_kernel_name, descriptor->tripleSize);
+        const char* unterm_triple = static_cast<const char*>(next) + sizeof(code_desc);
+        std::string_view triple(unterm_triple, descriptor->tripleSize);
 
-        if (kernel_name.find("host") != std::string_view::npos) {
-            next += chunk_size;
+        if (triple.find("host") != std::string_view::npos) {
+            next = static_cast<const char*>(next) + chunk_size;
             continue;
         }
 
-        //std::string filename = std::string_view("./code/") + kernel_name + "-" + std::to_string(g_curr_event) + "-" + std::to_string(i) + ".code";
-        //std::printf("Getting %s\n", filename.c_str());
-
-        // Make a copy of the code object here. 
-        std::string image{static_cast<const char*>(next + descriptor->offset), descriptor->size};
-        std::istringstream is(image); // FIXME: Makes a second copy?
-
-        getArgInfo(is, g_arginfo_db, g_curr_event++);
+        std::string filename = std::string("./code/") + std::string(triple) + "-" + std::to_string(g_curr_event) + "-" + std::to_string(i) + ".code";
 
         gputrace_event event;
         gputrace_event_code code_event;
 
-        //code_event.filename = filename;
+        // Make a copy of the code object here. 
+        //std::string image{static_cast<const char*>(next) + descriptor->offset, descriptor->size};
+        std::string image{static_cast<const char*>(fbwrapper->binary) + descriptor->offset, descriptor->size};
+        std::istringstream is(image); // FIXME: Makes a second copy?
+
+        getArgInfo(is, kernel_arg_sizes, register_event_id);
+
         code_event.code = image;
+        code_event.filename = filename;
 
         event.id = g_curr_event;
         event.rc = hipSuccess;
@@ -124,7 +115,7 @@ void* __hipRegisterFatBinary(const void* data)
 
         pushback_event(event);
 
-        next += chunk_size;
+        next = static_cast<const char*>(next) + chunk_size;
     }
 
     return (*hipRegisterFatBinary_fptr)(data);
@@ -156,27 +147,37 @@ hipError_t hipLaunchKernel(const void* function_address,
         hipModuleGetFunction_fptr = ( hipError_t (*) (hipFunction_t*, hipModule_t, const char*)) dlsym(rocmLibHandle, "hipModuleGetFunction");
     }
 
+
     std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
 
-    uint64_t total_size = 0;
-    if (kernel_arg_sizes.find(kernel_name) == kernel_arg_sizes.end()) {
-        sqlite3_stmt* pStmt = NULL;
-        const char* sql = "SELECT Size FROM ArgInfo WHERE KernelName = ?;";
-        if (sqlite3_prepare_v2(g_arginfo_db, sql, -1, &pStmt, 0) != SQLITE_OK) {
-            std::printf("SQL ERROR %s\n", sqlite3_errmsg(g_arginfo_db));
-        }
-        sqlite3_bind_text(pStmt, 1, kernel_name.c_str(), -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(pStmt) == SQLITE_ROW) {
-            total_size = sqlite3_column_int(pStmt, 0);
-            kernel_arg_sizes[kernel_name] = total_size;
-            std::printf("Added new kernel %s of size %d\n", kernel_name.c_str(), total_size);
-        }
-    }    
-    total_size = kernel_arg_sizes[kernel_name];
+    XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
+    uint64_t num_args = 0;
+    //auto kernel_arg_sizes = getKernelArgumentSizes();
+    if (kernel_arg_sizes.find(hash) != kernel_arg_sizes.end()) {
+        num_args = kernel_arg_sizes[hash].size;
+    }
+    std::printf("KERNEL NAME %s\n", kernel_name.c_str());
+    std::printf("NUM ARGS = %d\n", num_args);
 
-    //std::printf("Copying args of size %d\n", total_size);
+    uint64_t total_size = 0;
+    for(int i = 0; i < num_args; i++) {
+        std::string key = kernel_name + std::to_string(i);
+        hash = XXH64(key.data(), key.size(), 0);
+        SizeOffset size_offset = kernel_arg_sizes[hash];
+        total_size = size_offset.offset + size_offset.size;
+    }
     std::vector<std::byte> arg_data(total_size);
-    std::memcpy(arg_data.data(), args, total_size);
+    for (int i = 0; i < num_args; i++) {
+        std::string key = kernel_name + std::to_string(i);
+        hash = XXH64(key.data(), key.size(), 0);
+        SizeOffset size_offset = kernel_arg_sizes[hash];
+        std::printf("ARG %d SIZE %d\n", i, size_offset.size);
+        if (size_offset.size != 0 && args[i] != NULL) { 
+            std::memcpy(arg_data.data() + size_offset.offset, args[i], size_offset.size);
+        } else {
+            std::memcpy(arg_data.data() + size_offset.offset, &(args[i]), sizeof(void**));
+        }
+    }
 
     hipError_t result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
 
@@ -248,15 +249,16 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
     dim3 numBlocks = { gridDimX, gridDimY, gridDimZ };
     dim3 dimBlocks = { blockDimX, blockDimY, blockDimZ };
 
-    gputrace_event event;
+    /*
+    //gputrace_event event;
+    gputrace_event* event = static_cast<gputrace_event*>(std::malloc(sizeof(gputrace_event)));
     gputrace_event_launch launch_event;
 
-    event.id = g_curr_event++;
-    event.name = "hipModuleLaunchKernel";
-    event.rc = result;
-    event.stream = stream;
-    event.type = EVENT_LAUNCH;
-
+    event->id = g_curr_event++;
+    event->name = "hipModuleLaunchKernel";
+    event->rc = result;
+    event->stream = stream;
+    event->type = EVENT_LAUNCH;
 
     launch_event.kernel_name = kernel_name;
     launch_event.num_blocks = numBlocks;
@@ -264,8 +266,9 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
     launch_event.shared_mem_bytes = sharedMemBytes;
     launch_event.argdata = arg_data;
 
-    event.data = std::move(launch_event);
+    event->data = std::move(launch_event);
     pushback_event(event);
+    */
 
     return result;
 }
