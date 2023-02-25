@@ -45,15 +45,6 @@ sqlite3 *g_arginfo_db = NULL;
 
 void* rocmLibHandle = NULL;
 
-std::thread* db_writer_thread = NULL;
-
-std::mutex mx;
-std::unique_lock<std::mutex> lock(mx);
-std::condition_variable events_available;
-bool g_library_loaded = true;
-
-void prepare_events();
-
 int SQLITE_CHECK(int ans) \
   { \
     if (ans == SQLITE_OK) {
@@ -476,8 +467,6 @@ hipError_t hipGetDevice(int* deviceId) {
     }
 
     hipError_t result = (*hipGetDevice_fptr)(deviceId);
-
-    //gputrace_event* event;
     
     gputrace_event event;
 
@@ -500,8 +489,6 @@ hipError_t hipGetDeviceCount(int* count) {
 
     hipError_t result = (*hipGetDeviceCount_fptr)(count);
 
-    //gputrace_event* event;
-
     gputrace_event event;
     event.id = g_curr_event++;
     event.name = "hipGetDeviceCount";
@@ -520,8 +507,6 @@ hipError_t hipStreamSynchronize(hipStream_t stream)
     }
 
     hipError_t result = (*hipStreamSynchronize_fptr)(stream);
-
-    //gputrace_event* event;
 
     gputrace_event event;
 
@@ -544,8 +529,6 @@ hipError_t hipDeviceSynchronize()
 
     hipError_t result = (*hipDeviceSynchronize_fptr)();
 
-    //gputrace_event* event;
-
     gputrace_event event;
 
     event.id = g_curr_event++;
@@ -566,8 +549,6 @@ hipError_t hipFree(void *p)
     }
 
     hipError_t result = (*hipFree_fptr)(p);
-
-    //gputrace_event* event;
 
     gputrace_event event;
     gputrace_event_free free_event;
@@ -655,7 +636,6 @@ hipError_t hipMemcpyWithStream(void* dst, const void* src, size_t size, hipMemcp
     }
 
     hipError_t result = (*hipMemcpyWithStream_fptr)(dst, src, size, kind, stream);
-    //gputrace_event* event;
 
     gputrace_event event;
     gputrace_event_memcpy memcpy_event;
@@ -690,7 +670,6 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
 
     hipError_t result = (*hipGetDeviceProperties_fptr)(p_prop, device);
 
-    //gputrace_event* event;
     gputrace_event event;
     event.id = g_curr_event++;
     event.name = "hipGetDeviceProperties";
@@ -702,15 +681,3 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
 
     return result;
 }
-/* Unhandled
-hipError_t hipLaunchKernelGGL;
-hipError_t hipGetDeviceCount;
-hipError_t hipSetDevice;
-hipError_t hipBindTexture;
-hipError_t hipHostMalloc;
-hipError_t hipHostFree;
-hipError_t hipDeviceSynchronize;
-hipError_t hipMemGetInfo;
-hipError_t hipHostGetDevicePointer;
-*/
-};
