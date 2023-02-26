@@ -148,36 +148,36 @@ hipError_t hipLaunchKernel(const void* function_address,
     }
 
 
-    std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
+    //std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
 
-    XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
-    uint64_t num_args = 0;
-    //auto kernel_arg_sizes = getKernelArgumentSizes();
-    if (kernel_arg_sizes.find(hash) != kernel_arg_sizes.end()) {
-        num_args = kernel_arg_sizes[hash].size;
-    }
-    std::printf("KERNEL NAME %s\n", kernel_name.c_str());
-    std::printf("NUM ARGS = %d\n", num_args);
+    //XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
+    //uint64_t num_args = 0;
+    ////auto kernel_arg_sizes = getKernelArgumentSizes();
+    //if (kernel_arg_sizes.find(hash) != kernel_arg_sizes.end()) {
+    //    num_args = kernel_arg_sizes[hash].size;
+    //}
+    ////std::printf("KERNEL NAME %s\n", kernel_name.c_str());
+    ////std::printf("NUM ARGS = %d\n", num_args);
 
-    uint64_t total_size = 0;
-    for(int i = 0; i < num_args; i++) {
-        std::string key = kernel_name + std::to_string(i);
-        hash = XXH64(key.data(), key.size(), 0);
-        SizeOffset size_offset = kernel_arg_sizes[hash];
-        total_size = size_offset.offset + size_offset.size;
-    }
-    std::vector<std::byte> arg_data(total_size);
-    for (int i = 0; i < num_args; i++) {
-        std::string key = kernel_name + std::to_string(i);
-        hash = XXH64(key.data(), key.size(), 0);
-        SizeOffset size_offset = kernel_arg_sizes[hash];
-        std::printf("ARG %d SIZE %d\n", i, size_offset.size);
-        if (size_offset.size != 0 && args[i] != NULL) { 
-            std::memcpy(arg_data.data() + size_offset.offset, args[i], size_offset.size);
-        } else {
-            std::memcpy(arg_data.data() + size_offset.offset, &(args[i]), sizeof(void**));
-        }
-    }
+    //uint64_t total_size = 0;
+    //for(int i = 0; i < num_args; i++) {
+    //    std::string key = kernel_name + std::to_string(i);
+    //    hash = XXH64(key.data(), key.size(), 0);
+    //    SizeOffset size_offset = kernel_arg_sizes[hash];
+    //    total_size = size_offset.offset + size_offset.size;
+    //}
+    //std::vector<std::byte> arg_data(total_size);
+    //for (int i = 0; i < num_args; i++) {
+    //    std::string key = kernel_name + std::to_string(i);
+    //    hash = XXH64(key.data(), key.size(), 0);
+    //    SizeOffset size_offset = kernel_arg_sizes[hash];
+    //    //std::printf("ARG %d SIZE %d\n", i, size_offset.size);
+    //    if (size_offset.size != 0 && args[i] != NULL) { 
+    //        std::memcpy(arg_data.data() + size_offset.offset, args[i], size_offset.size);
+    //    } else {
+    //        std::memcpy(arg_data.data() + size_offset.offset, &(args[i]), sizeof(void**));
+    //    }
+    //}
 
     hipError_t result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
 
@@ -190,11 +190,11 @@ hipError_t hipLaunchKernel(const void* function_address,
     event.stream = stream;
     event.type = EVENT_LAUNCH;
 
-    launch_event.kernel_name = kernel_name;
+    launch_event.kernel_pointer = function_address;
     launch_event.num_blocks = numBlocks;
     launch_event.dim_blocks = dimBlocks;
     launch_event.shared_mem_bytes = sharedMemBytes;
-    launch_event.argdata = arg_data;
+    //launch_event.argdata = arg_data;
 
     event.data = std::move(launch_event);
 

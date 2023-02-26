@@ -22,7 +22,7 @@
 #include "progressbar.h"
 #include "atomic_queue/atomic_queue.h"
 
-#define MAX_ELEMS 8192
+#define MAX_ELEMS 8192*8
 extern atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
 extern std::atomic<int> g_curr_event;
 extern sqlite3 *g_event_db;
@@ -44,6 +44,15 @@ sqlite3 *g_event_db = NULL;
 sqlite3 *g_arginfo_db = NULL;
 
 void* rocmLibHandle = NULL;
+
+std::thread* db_writer_thread = NULL;
+
+std::mutex mx;
+std::unique_lock<std::mutex> lock(mx);
+std::condition_variable events_available;
+bool g_library_loaded = true;
+
+void prepare_events();
 
 int SQLITE_CHECK(int ans) \
   { \
@@ -68,6 +77,7 @@ __attribute__((constructor)) void hiptracer_init()
 {
     // Setup options
     auto as_bool = [](char* env) { return (env != NULL) && std::string(env) == "true"; };
+    std::printf("Using %d bytes for events\n", sizeof(gputrace_event) * MAX_ELEMS);
     
     DEBUG = as_bool(std::getenv("HIPTRACER_DEBUG"));
     EVENTDB = std::getenv("HIPTRACER_EVENTDB");
@@ -119,7 +129,7 @@ __attribute__((constructor)) void hiptracer_init()
                               "CREATE TABLE Events(Id INTEGER PRIMARY KEY, EventType INT, Name TEXT, Rc INT, Stream INT);"
                               "CREATE TABLE EventMalloc(Id INTEGER PRIMARY KEY, Stream INT, Ptr INT64, Size INT);"
                               "CREATE TABLE EventMemcpy(Id INTEGER PRIMARY KEY, Stream INT, Dst INT64, Src INT64, Size INT, Kind INT, HostData BLOB);"
-                              "CREATE TABLE EventLaunch(Id INTEGER PRIMARY KEY, Stream INT, KernelName TEXT, NumX INT, NumY INT, NumZ INT,DimX INT, DimY INT, DimZ INT, SharedMem INT, ArgData BLOB);"
+                              "CREATE TABLE EventLaunch(Id INTEGER PRIMARY KEY, Stream INT, KernelPointer INT, NumX INT, NumY INT, NumZ INT,DimX INT, DimY INT, DimZ INT, SharedMem INT, ArgData BLOB);"
                               "CREATE TABLE EventFree(Id INTEGER PRIMARY KEY, Stream INT, Ptr INT);"
                               "CREATE TABLE ArgInfo(Id INTEGER PRIMARY KEY, KernelName TEXT, Ind INT, AddressSpace TEXT, Size INT, Offset INT, ValueKind TEXT, Access TEXT);";
     const char* create_arginfo_sql = "PRAGMA synchronous = OFF;"
@@ -197,7 +207,7 @@ int insert_launch(gputrace_event event, sqlite3_stmt* pStmt)
 
     int rc = sqlite3_bind_int(pStmt, 1, event.id);
     rc = sqlite3_bind_int(pStmt, 2, (uint64_t) event.stream);
-    rc = sqlite3_bind_text(pStmt, 3, launch_event.kernel_name.c_str(), -1, SQLITE_STATIC);
+    rc = sqlite3_bind_int(pStmt, 3, (uint64_t) launch_event.kernel_pointer);
     rc = sqlite3_bind_int(pStmt, 4, launch_event.num_blocks.x);
     rc = sqlite3_bind_int(pStmt, 5, launch_event.num_blocks.y);
     rc = sqlite3_bind_int(pStmt, 6, launch_event.num_blocks.z);
@@ -287,7 +297,7 @@ void prepare_events()
     const char* eventSql = "INSERT INTO Events(EventType, Name, Rc, Stream, Id) VALUES(?, ?, ?, ?, ?);";
     const char* memcpySql = "INSERT INTO EventMemcpy(Id, Stream, Dst, Src, Size, Kind, HostData) VALUES(?, ?, ?, ?, ?, ?, ?);";
     const char* mallocSql = "INSERT INTO EventMalloc(Id, Stream, Ptr, Size) VALUES(?, ?, ?, ?);";
-    const char* launchSql = "INSERT INTO EventLaunch(Id, Stream, KernelName, NumX, NumY, NumZ, DimX, DimY, DimZ, SharedMem, ArgData)"
+    const char* launchSql = "INSERT INTO EventLaunch(Id, Stream, KernelPointer, NumX, NumY, NumZ, DimX, DimY, DimZ, SharedMem, ArgData)"
                             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     const char* freeSql = "INSERT INTO EventFree(Id, Stream, Ptr) VALUES(?, ?, ?);";
     const char* codeSql = "INSERT INTO Code(Path) VALUES(?)";
@@ -351,13 +361,13 @@ void prepare_events()
 
 void pushback_event(gputrace_event event)
 {
-    if (events_queue.was_full()) {
-        std::printf("Unable to add event, event queue full\nUse a larger buffer size or allocate more threads for event insertion\n");
-        //std::exit(-1);
-    } else {
-        events_queue.push(event);
-        events_available.notify_one();
+    static bool notified = false;
+    if (!notified && events_queue.was_full()) {
+        notified = true;
+        std::printf("Event queue full - Spinning on main thread\nUse a larger buffer size or allocate more threads for event insertion\n");
     }
+    events_queue.push(event);
+    events_available.notify_one();
 }
 
 /*
@@ -467,6 +477,8 @@ hipError_t hipGetDevice(int* deviceId) {
     }
 
     hipError_t result = (*hipGetDevice_fptr)(deviceId);
+
+    //gputrace_event* event;
     
     gputrace_event event;
 
@@ -489,6 +501,8 @@ hipError_t hipGetDeviceCount(int* count) {
 
     hipError_t result = (*hipGetDeviceCount_fptr)(count);
 
+    //gputrace_event* event;
+
     gputrace_event event;
     event.id = g_curr_event++;
     event.name = "hipGetDeviceCount";
@@ -507,6 +521,8 @@ hipError_t hipStreamSynchronize(hipStream_t stream)
     }
 
     hipError_t result = (*hipStreamSynchronize_fptr)(stream);
+
+    //gputrace_event* event;
 
     gputrace_event event;
 
@@ -529,6 +545,8 @@ hipError_t hipDeviceSynchronize()
 
     hipError_t result = (*hipDeviceSynchronize_fptr)();
 
+    //gputrace_event* event;
+
     gputrace_event event;
 
     event.id = g_curr_event++;
@@ -549,6 +567,8 @@ hipError_t hipFree(void *p)
     }
 
     hipError_t result = (*hipFree_fptr)(p);
+
+    //gputrace_event* event;
 
     gputrace_event event;
     gputrace_event_free free_event;
@@ -636,6 +656,7 @@ hipError_t hipMemcpyWithStream(void* dst, const void* src, size_t size, hipMemcp
     }
 
     hipError_t result = (*hipMemcpyWithStream_fptr)(dst, src, size, kind, stream);
+    //gputrace_event* event;
 
     gputrace_event event;
     gputrace_event_memcpy memcpy_event;
@@ -670,6 +691,7 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
 
     hipError_t result = (*hipGetDeviceProperties_fptr)(p_prop, device);
 
+    //gputrace_event* event;
     gputrace_event event;
     event.id = g_curr_event++;
     event.name = "hipGetDeviceProperties";
@@ -681,3 +703,15 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
 
     return result;
 }
+/* Unhandled
+hipError_t hipLaunchKernelGGL;
+hipError_t hipGetDeviceCount;
+hipError_t hipSetDevice;
+hipError_t hipBindTexture;
+hipError_t hipHostMalloc;
+hipError_t hipHostFree;
+hipError_t hipDeviceSynchronize;
+hipError_t hipMemGetInfo;
+hipError_t hipHostGetDevicePointer;
+*/
+};

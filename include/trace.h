@@ -42,7 +42,7 @@ struct gputrace_event_free {
 
 struct gputrace_event_launch {
     //std::string kernel_name;
-    uint32_t hashed_kname;
+    const void* kernel_pointer;
     dim3 num_blocks;
     dim3 dim_blocks;
     int shared_mem_bytes;
