@@ -88,7 +88,7 @@ int get_memcpy(int event_id, uintptr_t& dst, uintptr_t& src, size_t& size, hipMe
     kind = (hipMemcpyKind) sqlite3_column_int(pStmt, 3);
 
 
-    std::string filename = "hostdata-" + std::to_string(event_id) + ".bin";
+    std::string filename = "./hostdata/" + std::string("hostdata-") + std::to_string(event_id) + ".bin";
     if (kind == hipMemcpyHostToDevice) {
         buffer.resize(size);
 

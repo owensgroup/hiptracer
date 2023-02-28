@@ -255,7 +255,7 @@ int insert_memcpy(gputrace_event event, sqlite3_stmt* pStmt)
 
     if (memcpy_event.kind == hipMemcpyHostToDevice && g_capture_hostdata) {
         //rc = sqlite3_bind_blob(pStmt, 7, memcpy_event.hostdata.data(), memcpy_event.hostdata.size(), SQLITE_STATIC);
-        std::string filename = "hostdata-" + std::to_string(event.id) + ".bin";
+        std::string filename = "./hostdata/" + std::string("hostdata-") + std::to_string(event.id) + ".bin";
         std::FILE* fp = std::fopen(filename.c_str(), "wb");
         std::fwrite(memcpy_event.hostdata.data(), memcpy_event.hostdata.size(), 1, fp);
         std::fclose(fp);
