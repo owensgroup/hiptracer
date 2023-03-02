@@ -19,13 +19,11 @@ struct SizeOffset {
     uint64_t offset;
 };
 
-using namespace ELFIO; // FIXME
-
-void getArgInfo(elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event);
+void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event);
 
 void getArgInfo(std::istream& stream, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event)
 {
-    elfio reader;
+    ELFIO::elfio reader;
     if (!reader.load(stream)) {
         std::cout << " Loading stream failed" << std::endl;
     }
@@ -35,7 +33,7 @@ void getArgInfo(std::istream& stream, ska::flat_hash_map<uint64_t, SizeOffset>& 
 
 void getArgInfo(const char* fname, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event)
 {
-    elfio reader;
+    ELFIO::elfio reader;
 	
     if (!reader.load(fname) ) {
         std::cout << "Unable to find elf file" << std::endl;
@@ -52,24 +50,24 @@ struct ArgInfo {
     std::string access;
 };
 
-void getArgInfo(elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event)
+void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event)
 {
     // Print ELF file sections info
-    Elf_Half sec_num = reader.sections.size(); 
+    ELFIO::Elf_Half sec_num = reader.sections.size(); 
 	//std::cout <<" Sections " << sec_num << std::endl;
 
     for ( int i = 0; i < sec_num; ++i ) {
-        section* psec = reader.sections[i];
+        ELFIO::section* psec = reader.sections[i];
 		//std::printf("TYPE %d SHT_NOTE == %d\n", psec->get_type(), SHT_NOTE);
-        if (psec->get_type() == SHT_NOTE) {
-            note_section_accessor notes(reader, psec);
+        if (psec->get_type() == ELFIO::SHT_NOTE) {
+            ELFIO::note_section_accessor notes(reader, psec);
 
             //std::printf("Num notes: %d\n", notes.get_notes_num());
             for (int i = 0; i < notes.get_notes_num(); i++) {
-                Elf_Word type;
+                ELFIO::Elf_Word type;
                 std::string name;
                 void* desc;
-                Elf_Word descSize;
+                ELFIO::Elf_Word descSize;
                 notes.get_note(i, type, name, desc, descSize);
 
                 const char* r = (const char*)desc;
@@ -176,7 +174,7 @@ void getArgInfo(elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& argumen
 
 void oldGetArgInfo(const char* fname, std::map<std::string, std::vector<ArgInfo>>& names_to_info)
 {
-    elfio reader;
+    ELFIO::elfio reader;
 	
     if (!reader.load(fname) ) {
         //std::cout << "Unable to find elf file" << std::endl;
@@ -185,21 +183,21 @@ void oldGetArgInfo(const char* fname, std::map<std::string, std::vector<ArgInfo>
     }
 
     // Print ELF file sections info
-    Elf_Half sec_num = reader.sections.size(); 
+    ELFIO::Elf_Half sec_num = reader.sections.size(); 
 	//std::cout <<" Sections " << sec_num << std::endl;
 
     for ( int i = 0; i < sec_num; ++i ) {
-        section* psec = reader.sections[i];
+        ELFIO::section* psec = reader.sections[i];
 		//std::printf("TYPE %d SHT_NOTE == %d\n", psec->get_type(), SHT_NOTE);
-        if (psec->get_type() == SHT_NOTE) {
-            note_section_accessor notes(reader, psec);
+        if (psec->get_type() == ELFIO::SHT_NOTE) {
+            ELFIO::note_section_accessor notes(reader, psec);
 
             //std::printf("Num notes: %d\n", notes.get_notes_num());
             for (int i = 0; i < notes.get_notes_num(); i++) {
-                Elf_Word type;
+                ELFIO::Elf_Word type;
                 std::string name;
                 void* desc;
-                Elf_Word descSize;
+                ELFIO::Elf_Word descSize;
                 notes.get_note(i, type, name, desc, descSize);
 
                 const char* r = (const char*)desc;

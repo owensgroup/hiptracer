@@ -5,9 +5,28 @@
 #include <variant>
 #include <string>
 #include <cstddef>
+#include <thread>
+#include <condition_variable>
+
+#include "sqlite3.h"
+#include "atomic_queue/atomic_queue.h"
 
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
+
+struct Instr {
+    const char* getCdna(); // Return the string containing the full text of the instruction
+    uint32_t getOffset();
+    uint32_t getIdx();
+
+    const char* getOpcode();
+
+    bool isLoad();
+    bool isStore();
+    bool isBranch();
+
+    int getNumOperands();
+};
 
 enum HIP_EVENT {
     EVENT_UNDEFINED = 0,
@@ -67,5 +86,22 @@ struct gputrace_event {
                  gputrace_event_launch,
                  gputrace_event_code> data; // FIXME perf issues w/ std::variant
 };
+
+enum HIPTRACER_TOOL {
+    TOOL_CAPTURE,
+    TOOL_MEMTRACE
+};
+
+#define MAX_ELEMS 8192*8
+extern atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
+extern std::atomic<int> g_curr_event;
+extern sqlite3 *g_event_db;
+extern sqlite3 *g_arginfo_db;
+extern void* rocmLibHandle;
+extern void pushback_event(gputrace_event);
+extern std::condition_variable events_available;
+
+
+extern HIPTRACER_TOOL TOOL;
 
 #endif // __HIP_TRACE_H__

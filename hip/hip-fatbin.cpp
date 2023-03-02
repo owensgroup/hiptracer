@@ -15,13 +15,6 @@
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 
-#define MAX_ELEMS 8192
-extern atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
-extern std::atomic<int> g_curr_event;
-extern sqlite3 *g_event_db;
-extern sqlite3 *g_arginfo_db;
-extern void* rocmLibHandle;
-extern void pushback_event(gputrace_event);
 ska::flat_hash_map<uint64_t, SizeOffset> kernel_arg_sizes;
 
 extern "C" {
@@ -36,6 +29,12 @@ hipError_t  (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, hip
 const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
 #define CLANG_OFFLOAD_BUNDLER_MAGIC "__CLANG_OFFLOAD_BUNDLE__"
 #define AMDGCN_AMDHSA_TRIPLE "hip-amdgcn-amd-amdhsa"
+
+std::vector<Instr> get_instructions(std::string text) {
+    std::vector<Instr> instructions;
+
+    return instructions;
+}
 
 void* __hipRegisterFatBinary(const void* data)
 {
@@ -92,28 +91,77 @@ void* __hipRegisterFatBinary(const void* data)
         }
 
         std::string filename = std::string("./code/") + std::string(triple) + "-" + std::to_string(g_curr_event) + "-" + std::to_string(i) + ".code";
-
-        gputrace_event event;
-        gputrace_event_code code_event;
-
-        // Make a copy of the code object here. 
-        //std::string image{static_cast<const char*>(next) + descriptor->offset, descriptor->size};
         std::string image{static_cast<const char*>(fbwrapper->binary) + descriptor->offset, descriptor->size};
-        std::istringstream is(image); // FIXME: Makes a second copy?
 
-        getArgInfo(is, kernel_arg_sizes, register_event_id);
+        if (TOOL == TOOL_CAPTURE) {
+            gputrace_event event;
+            gputrace_event_code code_event;
+            // Make a copy of the code object here. 
+            std::istringstream is(image); // FIXME: Makes a second copy?
+            getArgInfo(is, kernel_arg_sizes, register_event_id);
 
-        code_event.code = image;
-        code_event.filename = filename;
+            code_event.code = image;
+            code_event.filename = filename;
 
-        event.id = g_curr_event;
-        event.rc = hipSuccess;
-        event.stream = hipStreamDefault;
-        event.type = EVENT_CODE;
+            event.id = g_curr_event;
+            event.rc = hipSuccess;
+            event.stream = hipStreamDefault;
+            event.type = EVENT_CODE;
 
-        event.data = std::move(code_event);
+            event.data = std::move(code_event);
 
-        pushback_event(event);
+            pushback_event(event);
+        } else if (TOOL == TOOL_MEMTRACE) {
+            //std::FILE* code = std::fopen(filename.c_str(), "wb");
+            //std::fwrite(image.data(), sizeof(char), image.size(), code);
+            //std::fclose(code);
+
+			std::istringstream is(image);
+			ELFIO::elfio reader;
+			reader.load(is);
+
+			for(int i = 0; i < reader.sections.size(); i++) {
+				ELFIO::section* psec = reader.sections[i];
+
+				if (psec) {
+					std::string sec_name = psec->get_name();
+					if (sec_name == std::string(".text")) {
+						std::string text{static_cast<const char*>(psec->get_data()), psec->get_size()};
+						std::vector<Instr> instructions = get_instructions(text);
+						for (int i = 0; i < instructions.size(); i++) {
+							Instr instr = instructions[i];
+							if (instr.isLoad() || instr.isStore()) {
+								uint32_t offset = instr.getOffset();
+								uint32_t jump = image.size() - offset;
+								uint32_t new_inst = 0xBF820000;
+								uint32_t ret_inst = 0xBF820000;
+
+								new_inst |= (jump / 4) - 1;
+
+								std::printf("NEW INST 0x%dx", new_inst);
+
+            					uint32_t old_inst = 0x0; // FIXME ~ Target instr could be 64 bits, ask llvm-mc / DynInst
+            					std::memcpy(&old_inst, &text[offset], sizeof(old_inst));
+            					std::memcpy(&text[offset], &new_inst, sizeof(old_inst));	
+            					
+            					psec->set_data(&text[0], text.size());
+            					
+            					uint32_t new_code = 0x8004FF80;
+            					uint32_t new_code2 = 0x4048F5C3;
+            					uint32_t new_code3 = 0x7E0C0204;
+            					psec->append_data((char*) &new_code, sizeof(new_code));
+            					psec->append_data((char*) &new_code2, sizeof(new_code2));
+            					psec->append_data((char*) &new_code3, sizeof(new_code3));
+            					psec->append_data((char*) &old_inst, sizeof(old_inst));
+            					psec->append_data((char*) &ret_inst, sizeof(ret_inst));
+            					
+            					reader.save(filename.c_str());
+							}
+						}	
+					}
+				}
+			}
+        }
 
         next = static_cast<const char*>(next) + chunk_size;
     }
@@ -147,58 +195,62 @@ hipError_t hipLaunchKernel(const void* function_address,
         hipModuleGetFunction_fptr = ( hipError_t (*) (hipFunction_t*, hipModule_t, const char*)) dlsym(rocmLibHandle, "hipModuleGetFunction");
     }
 
-
-    //std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
-
-    //XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
-    //uint64_t num_args = 0;
-    ////auto kernel_arg_sizes = getKernelArgumentSizes();
-    //if (kernel_arg_sizes.find(hash) != kernel_arg_sizes.end()) {
-    //    num_args = kernel_arg_sizes[hash].size;
-    //}
-    ////std::printf("KERNEL NAME %s\n", kernel_name.c_str());
-    ////std::printf("NUM ARGS = %d\n", num_args);
-
-    //uint64_t total_size = 0;
-    //for(int i = 0; i < num_args; i++) {
-    //    std::string key = kernel_name + std::to_string(i);
-    //    hash = XXH64(key.data(), key.size(), 0);
-    //    SizeOffset size_offset = kernel_arg_sizes[hash];
-    //    total_size = size_offset.offset + size_offset.size;
-    //}
-    //std::vector<std::byte> arg_data(total_size);
-    //for (int i = 0; i < num_args; i++) {
-    //    std::string key = kernel_name + std::to_string(i);
-    //    hash = XXH64(key.data(), key.size(), 0);
-    //    SizeOffset size_offset = kernel_arg_sizes[hash];
-    //    //std::printf("ARG %d SIZE %d\n", i, size_offset.size);
-    //    if (size_offset.size != 0 && args[i] != NULL) { 
-    //        std::memcpy(arg_data.data() + size_offset.offset, args[i], size_offset.size);
-    //    } else {
-    //        std::memcpy(arg_data.data() + size_offset.offset, &(args[i]), sizeof(void**));
-    //    }
-    //}
-
     hipError_t result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
 
-    gputrace_event event;
-    gputrace_event_launch launch_event;
+    if (TOOL == TOOL_CAPTURE) {
+        std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
 
-    event.id = g_curr_event++;
-    event.name = "hipLaunchKernel";
-    event.rc = result;
-    event.stream = stream;
-    event.type = EVENT_LAUNCH;
+        XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
+        uint64_t num_args = 0;
+        //auto kernel_arg_sizes = getKernelArgumentSizes();
+        //if (kernel_arg_sizes.find(hash) != kernel_arg_sizes.end()) {
+        //    num_args = kernel_arg_sizes[hash].size;
+        //}
+        ////std::printf("KERNEL NAME %s\n", kernel_name.c_str());
+        ////std::printf("NUM ARGS = %d\n", num_args);
 
-    launch_event.kernel_pointer = function_address;
-    launch_event.num_blocks = numBlocks;
-    launch_event.dim_blocks = dimBlocks;
-    launch_event.shared_mem_bytes = sharedMemBytes;
-    //launch_event.argdata = arg_data;
+        uint64_t total_size = 0;
+        for(int i = 0; i < num_args; i++) {
+            std::string key = kernel_name + std::to_string(i);
+            hash = XXH64(key.data(), key.size(), 0);
+            SizeOffset size_offset = kernel_arg_sizes[hash];
+            total_size = size_offset.offset + size_offset.size;
+        }
+        std::vector<std::byte> arg_data(total_size);
+        for (int i = 0; i < num_args; i++) {
+            std::string key = kernel_name + std::to_string(i);
+            hash = XXH64(key.data(), key.size(), 0);
+            SizeOffset size_offset = kernel_arg_sizes[hash];
+            //std::printf("ARG %d SIZE %d\n", i, size_offset.size);
+            if (size_offset.size != 0 && args[i] != NULL) { 
+                std::memcpy(arg_data.data() + size_offset.offset, args[i], size_offset.size);
+            } else {
+                std::memcpy(arg_data.data() + size_offset.offset, &(args[i]), sizeof(void**));
+            }
+        }
 
-    event.data = std::move(launch_event);
+        gputrace_event event;
+        gputrace_event_launch launch_event;
 
-    pushback_event(event);
+        event.id = g_curr_event++;
+        event.name = "hipLaunchKernel";
+        event.rc = result;
+        event.stream = stream;
+        event.type = EVENT_LAUNCH;
+
+        launch_event.kernel_pointer = function_address;
+        launch_event.num_blocks = numBlocks;
+        launch_event.dim_blocks = dimBlocks;
+        launch_event.shared_mem_bytes = sharedMemBytes;
+        //launch_event.argdata = arg_data;
+
+        event.data = std::move(launch_event);
+
+        pushback_event(event);
+    } else if (TOOL == TOOL_MEMTRACE) {
+        
+    }
+
 
     return result;
 }

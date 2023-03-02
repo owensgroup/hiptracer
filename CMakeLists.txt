@@ -12,10 +12,13 @@ target_include_directories(hipcapture PUBLIC "/opt/rocm/llvm/include")
 
 target_link_libraries(hipcapture dl zstd pthread)
 
-## add_library(cudacapture SHARED cuda/cuda.cpp
-##                                hip/sqlite3.c)
-## target_include_directories(cudacapture PUBLIC "include")
-## target_include_directories(cudacapture PUBLIC ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+# add_library(cudacapture SHARED cuda/cuda.cpp cuda/cuda-fatbin.cpp
+#                                hip/sqlite3.c)
+# target_include_directories(cudacapture PUBLIC "include")
+# target_include_directories(cudacapture PUBLIC "/usr/local/cuda/targets/x86_64-linux/include")
+# target_include_directories(cudacapture PUBLIC ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+# 
+# target_link_libraries(cudacapture dl pthread)
 
 set_source_files_properties (replay/replay.cpp PROPERTIES LANGUAGE HIP) 
 add_executable(replay replay/replay.cpp hip/sqlite3.c hip/xxhash.c hip/msgpuck.c hip/hints.c)

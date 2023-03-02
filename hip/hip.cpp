@@ -17,27 +17,16 @@
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 
-#include "sqlite3.h"
-
 #include "progressbar.h"
-#include "atomic_queue/atomic_queue.h"
 
-#define MAX_ELEMS 8192*8
-extern atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
-extern std::atomic<int> g_curr_event;
-extern sqlite3 *g_event_db;
-extern sqlite3 *g_arginfo_db;
-extern void* rocmLibHandle;
-extern std::condition_variable events_available;
-extern void pushback_event(gputrace_event);
 
-atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
-
-bool REPLAY = false;
+// OPTIONS
 bool DEBUG = false;
-bool REWRITE = false;
-const char* EVENTDB = NULL;
+std::string EVENTDB ="./tracer-default.db";
+std::string ROCM_PATH = "/opt/rocm/lib/";
 
+HIPTRACER_TOOL TOOL = TOOL_CAPTURE;
+atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
 std::atomic<int> g_curr_event = 0;
 bool g_capture_hostdata = true;
 sqlite3 *g_event_db = NULL;
@@ -72,52 +61,35 @@ int SQLITE_CHECK(int ans) \
     return ans;
   }
 
-
-__attribute__((constructor)) void hiptracer_init()
+void init_capture()
 {
-    // Setup options
-    auto as_bool = [](char* env) { return (env != NULL) && std::string(env) == "true"; };
-    std::printf("Using %d bytes for events\n", sizeof(gputrace_event) * MAX_ELEMS);
-    
-    DEBUG = as_bool(std::getenv("HIPTRACER_DEBUG"));
-    EVENTDB = std::getenv("HIPTRACER_EVENTDB");
-    char* SKIPHOSTDATA = std::getenv("HIPTRACER_SKIPHOSTDATA");
-
     std::filesystem::create_directory("./hostdata");
     std::filesystem::create_directory("./code");
-
-    if (EVENTDB == NULL) {
-        EVENTDB = "./tracer-default.db";
-    }
-    if (SKIPHOSTDATA == NULL) {
-        g_capture_hostdata = true;
-    } else {
-        g_capture_hostdata = false;
-        std::printf("Skipping host data\n");
-    }
     
-    rocmLibHandle = dlopen("/opt/rocm/lib/libamdhip64.so", RTLD_LAZY | RTLD_LOCAL);
+    std::string libPath = ROCM_PATH + std::string("/libamdhip64.so");
+    rocmLibHandle = dlopen(libPath.c_str(), RTLD_LAZY | RTLD_LOCAL);
     if (rocmLibHandle == NULL) {
         std::printf("Unable to open libamdhip64.so\n");
-        //std::exit(-1);
     }
+    assert(rocmLibHandle);
     
-    if (sqlite3_open(EVENTDB, &g_event_db) != SQLITE_OK) {
+    if (sqlite3_open(EVENTDB.c_str(), &g_event_db) != SQLITE_OK) {
         std::printf("Unable to open event database: %s\n", sqlite3_errmsg(g_event_db));
         sqlite3_close(g_event_db);
-        //std::exit(-1);
+        g_event_db = nullptr;
     }
+    assert(g_event_db);
+
     if (sqlite3_open("./code/arginfo.db", &g_arginfo_db) != SQLITE_OK) {
         std::printf("Unable to open arginfo database: %s\n", sqlite3_errmsg(g_arginfo_db));
         sqlite3_close(g_arginfo_db);
-        //std::exit(-1);
+        g_arginfo_db = nullptr;
     }
+    assert(g_arginfo_db);
  
     sqlite3_config(SQLITE_CONFIG_MULTITHREAD);
-    
 
-    const char* create_events_sql = "PRAGMA synchronous = OFF;"
-                              "PRAGMA journal_mode=off;"
+    const char* create_events_sql = "PRAGMA journal_mode=wal;"
                               "DROP TABLE IF EXISTS Events;"
                               "DROP TABLE IF EXISTS EventMalloc;"
                               "DROP TABLE IF EXISTS EventMemcpy;"
@@ -137,26 +109,57 @@ __attribute__((constructor)) void hiptracer_init()
                                      "DROP TABLE IF EXISTS ArgInfo;"
                               "CREATE TABLE ArgInfo(Id INTEGER PRIMARY KEY, KernelName TEXT, Ind INT, AddressSpace TEXT, Size INT, Offset INT, ValueKind TEXT, Access TEXT);";
     if(sqlite3_exec(g_event_db, create_events_sql, 0, 0, NULL)) {
-        std::exit(EXIT_FAILURE);
+        std::printf("Error creating events table: %s\n", sqlite3_errmsg(g_arginfo_db));
+        sqlite3_close(g_event_db);
+        g_event_db = nullptr;
+
     }
+    assert(g_event_db);
+
     if(sqlite3_exec(g_arginfo_db, create_arginfo_sql, 0, 0, NULL)) {  
-        std::exit(EXIT_FAILURE);
+        std::printf("Error creating arginfo table: %s\n", sqlite3_errmsg(g_arginfo_db));
+        sqlite3_close(g_arginfo_db);
+        g_arginfo_db = nullptr;
     }
+    assert(g_arginfo_db);
 
     g_library_loaded = true;
     db_writer_thread = new std::thread(prepare_events);
 }
 
+__attribute__((constructor)) void hiptracer_init()
+{
+    // Setup options
+    auto as_bool = [](char* env) { return (env != NULL) && std::string(env) == "true"; };
+    std::printf("Using %d bytes for events\n", sizeof(gputrace_event) * MAX_ELEMS);
+    
+    DEBUG = as_bool(std::getenv("HIPTRACER_DEBUG"));
+    EVENTDB = std::getenv("HIPTRACER_EVENTDB");
+    std::string tool = std::getenv("HIPTRACER_TOOL");
+
+    if (tool == "CAPTURE") {
+        TOOL = TOOL_CAPTURE;
+        init_capture();
+    } else if (tool == "MEMTRACE") {
+        TOOL = TOOL_MEMTRACE;
+    }
+}
+
 __attribute__((destructor)) void hiptracer_deinit()
 {
-    g_library_loaded = false;
-    events_available.notify_all();
+    if (TOOL == TOOL_CAPTURE) {
+        g_library_loaded = false;
+        events_available.notify_all();
 
-    sqlite3_close(g_event_db);
-    sqlite3_close(g_arginfo_db);
+        sqlite3_close(g_event_db);
+        sqlite3_close(g_arginfo_db);
 
-    if (db_writer_thread != NULL) {
-        (*db_writer_thread).join();
+        if (db_writer_thread != NULL) {
+            (*db_writer_thread).join();
+        }
+        delete db_writer_thread;
+    } else if (TOOL = TOOL_MEMTRACE) {
+        
     }
 }
 
@@ -412,17 +415,19 @@ hipError_t hipStreamCreateWithFlags(hipStream_t* stream, unsigned flags) {
 
     hipError_t result = (*hipStreamCreateWithFlags)(stream, flags);
 
-    gputrace_event event;
+    if (TOOL == TOOL_CAPTURE) {
+        gputrace_event event;
 
-    event.id = g_curr_event++;
-    event.name = "hipStreamCreateWithFlags";
-    event.rc = result;
-    if (stream != NULL) {
-        event.stream = *stream;
+        event.id = g_curr_event++;
+        event.name = "hipStreamCreateWithFlags";
+        event.rc = result;
+        if (stream != NULL) {
+            event.stream = *stream;
+        }
+        event.type = EVENT_STREAM;
+
+        pushback_event(event);
     }
-    event.type = EVENT_STREAM;
-
-    pushback_event(event);
 
     return result;
 }
@@ -435,17 +440,19 @@ hipError_t hipStreamCreate(hipStream_t* stream)
 
     hipError_t result = (*hipStreamCreate_fptr)(stream);
  
-    gputrace_event event;
+    if (TOOL == TOOL_CAPTURE) {
+        gputrace_event event;
 
-    event.id = g_curr_event++;
-    event.name = "hipStreamCreate";
-    event.rc = result;
-    if (stream != NULL) {
-            event.stream = *stream;
+        event.id = g_curr_event++;
+        event.name = "hipStreamCreate";
+        event.rc = result;
+        if (stream != NULL) {
+                event.stream = *stream;
+        }
+        event.type = EVENT_STREAM;
+
+        pushback_event(event);        
     }
-    event.type = EVENT_STREAM;
-
-    pushback_event(event);
 
     return result;
 }
@@ -691,7 +698,6 @@ hipError_t hipGetDeviceProperties(hipDeviceProp_t* p_prop, int device)
 
     hipError_t result = (*hipGetDeviceProperties_fptr)(p_prop, device);
 
-    //gputrace_event* event;
     gputrace_event event;
     event.id = g_curr_event++;
     event.name = "hipGetDeviceProperties";
