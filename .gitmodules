@@ -1,0 +1,4 @@
+[submodule "lib/dyninst"]
+	path = lib/dyninst
+	url = https://github.com/DynInst/dyninst
+    branch = amdgpu-codegen

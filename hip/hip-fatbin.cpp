@@ -4,6 +4,9 @@
 #include <condition_variable>
 #include <string>
 
+// DynInst
+#include "InstructionDecode.h"
+
 #include "elf.h"
 #include "trace.h"
 
@@ -33,6 +36,20 @@ const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
 std::vector<Instr> get_instructions(std::string text) {
     std::vector<Instr> instructions;
 
+    Dyninst::InstructionDecoder decoder(text.data(), text.size());
+
+    Instruction i = decoder.decode();
+    while(i.isValid()) {
+        Instr instr;
+        instr.offset = i.ptr() - text.data();
+        instr.cdna = std::string(i.format(instr.offset));
+        instr.size = i.size();
+        instr.num_operands = i.getNumOperands();
+
+        instructions.push_back(instr);
+
+        i = decoder.decode();
+    }
     return instructions;
 }
 

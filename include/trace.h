@@ -19,13 +19,18 @@ struct Instr {
     uint32_t getOffset();
     uint32_t getIdx();
 
-    const char* getOpcode();
+    //const char* getOpcode();
 
     bool isLoad();
     bool isStore();
     bool isBranch();
 
     int getNumOperands();
+
+    int num_operands;
+    size_t size;
+    size_t offset;
+    std::string cdna;
 };
 
 enum HIP_EVENT {
