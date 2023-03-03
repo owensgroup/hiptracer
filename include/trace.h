@@ -1,21 +1,26 @@
 #ifndef __HIP_TRACE_H__
 #define __HIP_TRACE_H__
 
+#include <string>
 #include <vector>
 #include <variant>
-#include <string>
 #include <cstddef>
 #include <thread>
 #include <condition_variable>
 
-#include "sqlite3.h"
+#include "elf.h"
+
 #include "atomic_queue/atomic_queue.h"
+#include "sqlite3.h"
 
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 
 struct Instr {
-    const char* getCdna(); // Return the string containing the full text of the instruction
+    std::string cdna;
+    const char* getCdna() {
+        return cdna.c_str();
+    }
     uint32_t getOffset();
     uint32_t getIdx();
 
@@ -30,7 +35,6 @@ struct Instr {
     int num_operands;
     size_t size;
     size_t offset;
-    std::string cdna;
 };
 
 enum HIP_EVENT {
@@ -65,12 +69,12 @@ struct gputrace_event_free {
 };
 
 struct gputrace_event_launch {
-    //std::string kernel_name;
-    const void* kernel_pointer;
+    const void* function_address;
     dim3 num_blocks;
     dim3 dim_blocks;
     int shared_mem_bytes;
     std::vector<std::byte> argdata;
+    std::string kernel_name;
 };
 
 struct gputrace_event_code {
@@ -80,9 +84,9 @@ struct gputrace_event_code {
 
 struct gputrace_event {
     uint64_t id;
-    const char* name;
     hipError_t rc;
     hipStream_t stream;
+    const char* name;
 
     HIP_EVENT type;
     std::variant<gputrace_event_malloc,
@@ -98,15 +102,20 @@ enum HIPTRACER_TOOL {
 };
 
 #define MAX_ELEMS 8192*8
-extern atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
-extern std::atomic<int> g_curr_event;
-extern sqlite3 *g_event_db;
-extern sqlite3 *g_arginfo_db;
-extern void* rocmLibHandle;
-extern void pushback_event(gputrace_event);
-extern std::condition_variable events_available;
-
-
-extern HIPTRACER_TOOL TOOL;
+std::unique_ptr<atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS>>& get_events_queue();
+std::condition_variable& get_events_available();
+std::atomic<int>& get_curr_event();
+sqlite3*& get_event_db();
+sqlite3*& get_arginfo_db();
+std::unique_ptr<std::thread>& get_db_writer_thread();
+HIPTRACER_TOOL& get_tool();
+bool& get_library_loaded();
+std::string& get_db_path();
+std::string& get_rocm_path();
+void*& get_rocm_lib();
+std::unique_ptr<ska::flat_hash_map<uint64_t, SizeOffset>>& get_kernel_arg_sizes();
+std::unique_ptr<ska::flat_hash_map<uint64_t, bool>>& get_handled_fatbins();
+void events_wait();
+void pushback_event(gputrace_event event);
 
 #endif // __HIP_TRACE_H__

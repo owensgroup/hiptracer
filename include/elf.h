@@ -19,9 +19,9 @@ struct SizeOffset {
     uint64_t offset;
 };
 
-void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event);
+inline void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event);
 
-void getArgInfo(std::istream& stream, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event)
+inline void getArgInfo(std::istream& stream, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event)
 {
     ELFIO::elfio reader;
     if (!reader.load(stream)) {
@@ -31,7 +31,7 @@ void getArgInfo(std::istream& stream, ska::flat_hash_map<uint64_t, SizeOffset>& 
     getArgInfo(reader, argument_sizes, curr_event);
 }
 
-void getArgInfo(const char* fname, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event)
+inline void getArgInfo(const char* fname, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event)
 {
     ELFIO::elfio reader;
 	
@@ -50,7 +50,7 @@ struct ArgInfo {
     std::string access;
 };
 
-void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event)
+inline void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event)
 {
     // Print ELF file sections info
     ELFIO::Elf_Half sec_num = reader.sections.size(); 
@@ -153,6 +153,7 @@ void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& 
                                 std::string arg_key = kernel_name + std::to_string(i);
                                 XXH64_hash_t hash = XXH64(arg_key.data(), arg_key.size(), 0);
                                 argument_sizes[hash] = size_offset;
+                                std::printf("Inserting %d : %d \n", hash, size_offset.size);
                             }
                             SizeOffset kern_num_args;
                             kern_num_args.size = arg_infos.size();
@@ -160,6 +161,7 @@ void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& 
 
                             XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
                             argument_sizes[hash] = kern_num_args;
+                            std::printf("Inserting %d : %d \n", hash, kern_num_args.size);
                             arg_infos.clear();
                         }
                     }
@@ -172,7 +174,7 @@ void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& 
     }
 }
 
-void oldGetArgInfo(const char* fname, std::map<std::string, std::vector<ArgInfo>>& names_to_info)
+inline void oldGetArgInfo(const char* fname, std::map<std::string, std::vector<ArgInfo>>& names_to_info)
 {
     ELFIO::elfio reader;
 	

@@ -5,7 +5,7 @@
 #include <string>
 
 // DynInst
-#include "InstructionDecode.h"
+#include "InstructionDecoder.h"
 
 #include "elf.h"
 #include "trace.h"
@@ -18,7 +18,27 @@
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 
-ska::flat_hash_map<uint64_t, SizeOffset> kernel_arg_sizes;
+std::vector<Instr> get_instructions(std::string text) {
+    std::vector<Instr> instructions;
+
+    Dyninst::InstructionAPI::InstructionDecoder decoder(text.data(), text.size(), Dyninst::Architecture::Arch_amdgpu_gfx908);
+
+    Dyninst::InstructionAPI::Instruction i = decoder.decode();
+    size_t offset = 0;
+    while(i.isValid()) {
+        Instr instr;
+        instr.offset = offset;
+        instr.cdna = std::string(i.format(instr.offset));
+        instr.size = i.size();
+        //instr.num_operands = i.getNumOperands();
+
+        instructions.push_back(instr);
+
+        offset += instr.size;
+        i = decoder.decode();
+    }
+    return instructions;
+}
 
 extern "C" {
 void*       (*hipRegisterFatBinary_fptr)(const void*) = NULL;
@@ -33,38 +53,19 @@ const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
 #define CLANG_OFFLOAD_BUNDLER_MAGIC "__CLANG_OFFLOAD_BUNDLE__"
 #define AMDGCN_AMDHSA_TRIPLE "hip-amdgcn-amd-amdhsa"
 
-std::vector<Instr> get_instructions(std::string text) {
-    std::vector<Instr> instructions;
-
-    Dyninst::InstructionDecoder decoder(text.data(), text.size());
-
-    Instruction i = decoder.decode();
-    while(i.isValid()) {
-        Instr instr;
-        instr.offset = i.ptr() - text.data();
-        instr.cdna = std::string(i.format(instr.offset));
-        instr.size = i.size();
-        instr.num_operands = i.getNumOperands();
-
-        instructions.push_back(instr);
-
-        i = decoder.decode();
-    }
-    return instructions;
-}
 
 void* __hipRegisterFatBinary(const void* data)
 {
-    int register_event_id = g_curr_event++;
-    if (register_event_id % 100 == 0) {
-        std::printf("%d\n", register_event_id);
+    if (hipRegisterFatBinary_fptr == NULL) {
+        hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(get_rocm_lib(), "__hipRegisterFatBinary");
+    }
+    if (get_handled_fatbins()->find((uint64_t) data) != get_handled_fatbins()->end()) {
+        if (get_handled_fatbins()->at((uint64_t) data)) return (*hipRegisterFatBinary_fptr)(data);
     }
 
-    if (hipRegisterFatBinary_fptr == NULL) {
-        hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(rocmLibHandle, "__hipRegisterFatBinary");
-    }
-    if (data == NULL) {
-        return (*hipRegisterFatBinary_fptr)(data);
+    int register_event_id = get_curr_event()++;
+    if (register_event_id % 100 == 0) {
+        std::printf("%d\n", register_event_id);
     }
 
     struct fb_wrapper {
@@ -87,6 +88,7 @@ void* __hipRegisterFatBinary(const void* data)
     const fb_header* fbheader = static_cast<const fb_header*>(fbwrapper->binary);
 
     const void* next = static_cast<const char*>(fbwrapper->binary) + sizeof(fb_header);
+    std::printf("num bundles %d\n", fbheader->numBundles);
     for(int i = 0; i < fbheader->numBundles; i++) {
         struct code_desc {
             uint64_t offset;
@@ -106,21 +108,26 @@ void* __hipRegisterFatBinary(const void* data)
             next = static_cast<const char*>(next) + chunk_size;
             continue;
         }
+        if (triple.find("gfx908") == std::string_view::npos) {
+            next = static_cast<const char*>(next) + chunk_size;
+            continue;
+        }
+        std::printf("TRIPLE %s\n", triple.data());
 
-        std::string filename = std::string("./code/") + std::string(triple) + "-" + std::to_string(g_curr_event) + "-" + std::to_string(i) + ".code";
+        std::string filename = std::string("./code/") + std::string(triple) + "-" + std::to_string(get_curr_event()) + "-" + std::to_string(i) + ".code";
         std::string image{static_cast<const char*>(fbwrapper->binary) + descriptor->offset, descriptor->size};
 
-        if (TOOL == TOOL_CAPTURE) {
+        if (get_tool() == TOOL_CAPTURE) {
             gputrace_event event;
             gputrace_event_code code_event;
             // Make a copy of the code object here. 
             std::istringstream is(image); // FIXME: Makes a second copy?
-            getArgInfo(is, kernel_arg_sizes, register_event_id);
+            getArgInfo(is, *get_kernel_arg_sizes(), register_event_id);
 
             code_event.code = image;
             code_event.filename = filename;
 
-            event.id = g_curr_event;
+            event.id = get_curr_event();
             event.rc = hipSuccess;
             event.stream = hipStreamDefault;
             event.type = EVENT_CODE;
@@ -128,7 +135,7 @@ void* __hipRegisterFatBinary(const void* data)
             event.data = std::move(code_event);
 
             pushback_event(event);
-        } else if (TOOL == TOOL_MEMTRACE) {
+        } else if (get_tool() == TOOL_MEMTRACE) {
             //std::FILE* code = std::fopen(filename.c_str(), "wb");
             //std::fwrite(image.data(), sizeof(char), image.size(), code);
             //std::fclose(code);
@@ -147,6 +154,8 @@ void* __hipRegisterFatBinary(const void* data)
 						std::vector<Instr> instructions = get_instructions(text);
 						for (int i = 0; i < instructions.size(); i++) {
 							Instr instr = instructions[i];
+                            //std::printf("Instr %d: %s\n", i, instr.getCdna());
+                            /*
 							if (instr.isLoad() || instr.isStore()) {
 								uint32_t offset = instr.getOffset();
 								uint32_t jump = image.size() - offset;
@@ -174,6 +183,7 @@ void* __hipRegisterFatBinary(const void* data)
             					
             					reader.save(filename.c_str());
 							}
+                            */
 						}	
 					}
 				}
@@ -183,6 +193,7 @@ void* __hipRegisterFatBinary(const void* data)
         next = static_cast<const char*>(next) + chunk_size;
     }
 
+    get_handled_fatbins()->insert({(uint64_t)data, true });
     return (*hipRegisterFatBinary_fptr)(data);
 }
 
@@ -194,50 +205,51 @@ hipError_t hipLaunchKernel(const void* function_address,
         hipStream_t stream)
 {
     if (hipLaunchKernel_fptr == NULL) {
-        hipLaunchKernel_fptr = ( hipError_t (*) (const void*, dim3, dim3, void**, size_t, hipStream_t)) dlsym(rocmLibHandle, "hipLaunchKernel");
+        hipLaunchKernel_fptr = ( hipError_t (*) (const void*, dim3, dim3, void**, size_t, hipStream_t)) dlsym(get_rocm_lib(), "hipLaunchKernel");
     } 
     if (hipModuleLoad_fptr == NULL) {
-        hipModuleLoad_fptr = ( hipError_t (*) (hipModule_t* , const char* )) dlsym(rocmLibHandle, "hipModuleLoad");
+        hipModuleLoad_fptr = ( hipError_t (*) (hipModule_t* , const char* )) dlsym(get_rocm_lib(), "hipModuleLoad");
     }
 
     if (hipKernelNameRefByPtr_fptr == NULL) {
-        hipKernelNameRefByPtr_fptr = ( const char* (*) (const void*, hipStream_t)) dlsym(rocmLibHandle, "hipKernelNameRefByPtr");
+        hipKernelNameRefByPtr_fptr = ( const char* (*) (const void*, hipStream_t)) dlsym(get_rocm_lib(), "hipKernelNameRefByPtr");
     }
     if (hipModuleLaunchKernel_fptr == NULL) {
         hipModuleLaunchKernel_fptr = ( hipError_t (*) (hipFunction_t, unsigned int, unsigned int, unsigned int,
                                                           unsigned int, unsigned int, unsigned int, unsigned int,
-                                                          hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
+                                                          hipStream_t, void**, void**)) dlsym(get_rocm_lib(), "hipModuleLaunchKernel");
     }
     if (hipModuleGetFunction_fptr == NULL) {
-        hipModuleGetFunction_fptr = ( hipError_t (*) (hipFunction_t*, hipModule_t, const char*)) dlsym(rocmLibHandle, "hipModuleGetFunction");
+        hipModuleGetFunction_fptr = ( hipError_t (*) (hipFunction_t*, hipModule_t, const char*)) dlsym(get_rocm_lib(), "hipModuleGetFunction");
     }
 
     hipError_t result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
 
-    if (TOOL == TOOL_CAPTURE) {
+    if (get_tool() == TOOL_CAPTURE) {
         std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
 
         XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
         uint64_t num_args = 0;
-        //auto kernel_arg_sizes = getKernelArgumentSizes();
-        //if (kernel_arg_sizes.find(hash) != kernel_arg_sizes.end()) {
-        //    num_args = kernel_arg_sizes[hash].size;
-        //}
-        ////std::printf("KERNEL NAME %s\n", kernel_name.c_str());
-        ////std::printf("NUM ARGS = %d\n", num_args);
+        std::printf("Looking up %d: \n", hash);
+        std::printf("Table has size %d: \n", get_kernel_arg_sizes()->size());
+        if (get_kernel_arg_sizes()->find(hash) != get_kernel_arg_sizes()->end()) {
+                num_args = get_kernel_arg_sizes()->at(hash).size;
+        }
+        std::printf("KERNEL NAME %s\n", kernel_name.c_str());
+        std::printf("NUM ARGS = %d\n", num_args);
 
         uint64_t total_size = 0;
         for(int i = 0; i < num_args; i++) {
             std::string key = kernel_name + std::to_string(i);
             hash = XXH64(key.data(), key.size(), 0);
-            SizeOffset size_offset = kernel_arg_sizes[hash];
+            SizeOffset size_offset = get_kernel_arg_sizes()->at(hash);
             total_size = size_offset.offset + size_offset.size;
         }
         std::vector<std::byte> arg_data(total_size);
         for (int i = 0; i < num_args; i++) {
             std::string key = kernel_name + std::to_string(i);
             hash = XXH64(key.data(), key.size(), 0);
-            SizeOffset size_offset = kernel_arg_sizes[hash];
+            SizeOffset size_offset = get_kernel_arg_sizes()->at(hash);
             //std::printf("ARG %d SIZE %d\n", i, size_offset.size);
             if (size_offset.size != 0 && args[i] != NULL) { 
                 std::memcpy(arg_data.data() + size_offset.offset, args[i], size_offset.size);
@@ -249,22 +261,22 @@ hipError_t hipLaunchKernel(const void* function_address,
         gputrace_event event;
         gputrace_event_launch launch_event;
 
-        event.id = g_curr_event++;
+        event.id = get_curr_event()++;
         event.name = "hipLaunchKernel";
         event.rc = result;
         event.stream = stream;
         event.type = EVENT_LAUNCH;
 
-        launch_event.kernel_pointer = function_address;
+        launch_event.kernel_name = kernel_name;
         launch_event.num_blocks = numBlocks;
         launch_event.dim_blocks = dimBlocks;
         launch_event.shared_mem_bytes = sharedMemBytes;
-        //launch_event.argdata = arg_data;
+        launch_event.argdata = arg_data;
 
         event.data = std::move(launch_event);
 
         pushback_event(event);
-    } else if (TOOL == TOOL_MEMTRACE) {
+    } else if (get_tool() == TOOL_MEMTRACE) {
         
     }
 
@@ -285,11 +297,11 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
         void ** extra)
 {
     if (hipModuleLaunchKernel_fptr == NULL) {
-        hipModuleLaunchKernel_fptr = ( hipError_t (*) (hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, hipStream_t, void**, void**)) dlsym(rocmLibHandle, "hipModuleLaunchKernel");
+        hipModuleLaunchKernel_fptr = ( hipError_t (*) (hipFunction_t, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, hipStream_t, void**, void**)) dlsym(get_rocm_lib(), "hipModuleLaunchKernel");
     }
     
     if (hipKernelNameRef_fptr == NULL) {
-        hipKernelNameRef_fptr = ( const char* (*) (const hipFunction_t)) dlsym(rocmLibHandle, "hipKernelNameRef");
+        hipKernelNameRef_fptr = ( const char* (*) (const hipFunction_t)) dlsym(get_rocm_lib(), "hipKernelNameRef");
     }  
 
     const char* kernel_name = (*hipKernelNameRef_fptr)(f);
@@ -323,7 +335,7 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
     gputrace_event* event = static_cast<gputrace_event*>(std::malloc(sizeof(gputrace_event)));
     gputrace_event_launch launch_event;
 
-    event->id = g_curr_event++;
+    event->id = get_curr_event()++;
     event->name = "hipModuleLaunchKernel";
     event->rc = result;
     event->stream = stream;

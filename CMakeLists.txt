@@ -1,27 +1,19 @@
 cmake_minimum_required(VERSION 3.21)
 include(FetchContent)
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 list(APPEND CMAKE_PREFIX_PATH /opt/rocm/lib/ /opt/rocm/hip /opt/rocm)
 set(AMDDeviceLibs_DIR /opt/rocm/lib/cmake/AMDDeviceLibs)
 
+set(ElfUtils_ROOT_DIR /home/carozhon/wario/hiptracer/lib/elfutils/build/ CACHE FILEPATH "Elfutils location")
 
 project(hiptracer LANGUAGES C CXX HIP)
 set(CMAKE_CXX_STANDARD 17)
+set(elfutils_SOURCE_DIR ${CMAKE_SOURCE_DIR}/lib/elfutils)
 
-FetchContent_Declare(dyninst 
-                     GIT_REPOSITORY https://github.com/DynInst/dyninst.git 
-                     GIT_TAG amdgpu-codegen 
-                     FIND_PACKAGE_ARGS)
-FetchContent_MakeAvailable(dyninst)
-
-message( "DYNINST ${dyninst_SOURCE_DIR}")
-message( "INCLUDE ${DYNINST_INCLUDE_DIR}")
-
-set(CMAKE_MODULE_PATH
-  "${dyninst_SOURCE_DIR}"
-  "${dyninst_SOURCE_DIR}/Modules"
-  ${CMAKE_MODULE_PATH}
-)
+message("ELFUTILS" ${ElfUtils_ROOT_DIR})
+find_package(Dyninst)
 
 add_library(hipcapture SHARED hip/hip.cpp hip/hip-fatbin.cpp
                        hip/sqlite3.c
@@ -33,7 +25,7 @@ target_include_directories(hipcapture PUBLIC "/opt/rocm/include")
 target_include_directories(hipcapture PUBLIC "/opt/rocm/llvm/include")
 target_include_directories(hipcapture PUBLIC ${DYNINST_INCLUDE_DIR})
 
-target_link_libraries(hipcapture dl zstd pthread dyninst)
+target_link_libraries(hipcapture dl zstd pthread instructionAPI)
 
 # add_library(cudacapture SHARED cuda/cuda.cpp cuda/cuda-fatbin.cpp
 #                                hip/sqlite3.c)
