@@ -77,11 +77,12 @@ Some tests are included that capture the HIP programs under examples/. Functiona
 # Results
 Capture sizes may be inaccurate if replay doesn't function.
 Replay indicates current status of replay tool with the program.
-"Slow?" indicates the program was slow to capture. Likely due to a large amount of host data.
+Some programs don't replay because of how they access GPU memory (through opaque structs) - this can be addressed with GPU virtual memory management.
+Some programs don't replay because of unknown kernel argument types.
 
 | Example Program | Capture Size | Replay Functionality | Comments |
 | ----------------| ------------ | -------------------  | -------- |
-| `vectoradd_hip` |    8.1M       | ⭕ | |
+| `vectoradd_hip` |   2.6M       | ⭕ | |
 | `cuda-stream`   |    121K       | ⭕  | |
 | `strided-access` |12K          | ⭕   | |
 | `reduction`     |  13M          | ⭕ | |
