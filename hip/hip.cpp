@@ -21,84 +21,73 @@
 #include "atomic_queue/atomic_queue.h"
 #include "progressbar.h"
 
-void prepare_events();
-
-std::unique_ptr<atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS>>& get_events_queue() {
-    static std::unique_ptr<atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS>> events_queue(new atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS>);
-    return events_queue;
+hiptracer_state& get_hiptracer_state() {
+    static std::unique_ptr<hiptracer_state> state(new hiptracer_state);
+    return *state;
 }
-std::condition_variable& get_events_available() {
-    static std::condition_variable events_available;
-    return events_available;
+
+// Ensure construction before other operations
+__attribute__((constructor)) void hiptracer_init() {
+    get_hiptracer_state();
+}
+
+atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS>& get_events_queue() {
+    return get_hiptracer_state().events_queue;
 }
 std::atomic<int>& get_curr_event() {
-    static std::atomic<int> g_curr_event;
-    return g_curr_event;
+    return get_hiptracer_state().curr_event;
 }
 sqlite3*& get_event_db() {
-    static sqlite3* g_event_db;
-    return g_event_db;
+    return get_hiptracer_state().event_db;
 }
 sqlite3*& get_arginfo_db() {
-    static sqlite3* g_arginfo_db;
-    return g_arginfo_db;
-}
-
-std::unique_ptr<std::thread>& get_db_writer_thread() {
-    static std::unique_ptr<std::thread> db_writer_thread(new std::thread(prepare_events));
-    return db_writer_thread;
+    return get_hiptracer_state().arginfo_db;
 }
 
 HIPTRACER_TOOL& get_tool() {
-    static HIPTRACER_TOOL TOOL = TOOL_CAPTURE;
-    return TOOL;
+    return get_hiptracer_state().tool;
 }
 
 bool& get_library_loaded() {
-    static bool g_library_loaded = true;
-    return g_library_loaded;
+    return get_hiptracer_state().library_loaded;
 }
 
 std::string& get_db_path() {
-    static std::string db_path = "./tracer-default.db";
-    return db_path;
+    return get_hiptracer_state().db_path;
 }
 
 std::string& get_rocm_path() {
-    static std::string rocm_path = "/opt/rocm/lib/libamdhip64.so";
-    return rocm_path;
+    return get_hiptracer_state().rocm_path;
 }
 void*& get_rocm_lib() {
-    static void* rocmLibHandle = NULL;
-    return rocmLibHandle;
+    return get_hiptracer_state().rocm_lib;
 }
 
-std::unique_ptr<ska::flat_hash_map<uint64_t, SizeOffset>>& get_kernel_arg_sizes() {
-    static std::unique_ptr<ska::flat_hash_map<uint64_t, SizeOffset>> kernel_arg_sizes( new ska::flat_hash_map<uint64_t, SizeOffset>);
-    return kernel_arg_sizes;
+ska::flat_hash_map<uint64_t, SizeOffset>& get_kernel_arg_sizes() {
+    return get_hiptracer_state().kernel_arg_sizes;
 }
 
-std::unique_ptr<ska::flat_hash_map<uint64_t, bool>>& get_handled_fatbins() {
-    static std::unique_ptr<ska::flat_hash_map<uint64_t, bool>> handled_fatbins(new ska::flat_hash_map<uint64_t, bool>);
-    return handled_fatbins;
+ska::flat_hash_map<uint64_t, bool>& get_handled_fatbins() {
+    return get_hiptracer_state().handled_fatbins;
 }
 
-void events_wait() {
-    static std::mutex mx;
-    static std::unique_lock<std::mutex> lock(mx);
-    get_events_available().wait(lock);
-}
 
 void pushback_event(gputrace_event event)
 {
     static bool notified = false;
+    static bool prepared = false;
+    
+    if (!prepared) {
+        get_hiptracer_state().db_writer_thread = new std::thread(prepare_events);
+        prepared = true;
+    }
 
-    if (!notified && get_events_queue()->was_full()) {
+    if (!notified && get_events_queue().was_full()) {
         notified = true;
         std::printf("Event queue full - Spinning on main thread\nUse a larger buffer size or allocate more threads for event insertion\n");
     }
-    get_events_queue()->push(event);
-    get_events_available().notify_one();
+    get_events_queue().push(event);
+    get_hiptracer_state().events_available.notify_all();
 }
 
 int SQLITE_CHECK(int ans) \
@@ -118,124 +107,6 @@ int SQLITE_CHECK(int ans) \
     }
     return ans;
   }
-
-
-void init_capture()
-{
-    std::filesystem::create_directory("./hostdata");
-    std::filesystem::create_directory("./code");
-    
-    get_rocm_lib() = dlopen(get_rocm_path().c_str(), RTLD_LAZY | RTLD_LOCAL);
-    if (get_rocm_lib() == NULL) {
-        std::printf("Unable to open libamdhip64.so\n");
-    }
-    assert(get_rocm_lib());
-    
-    if (sqlite3_open(get_db_path().c_str(), &get_event_db()) != SQLITE_OK) {
-        std::printf("Unable to open event database: %s\n", sqlite3_errmsg(get_event_db()));
-        sqlite3_close(get_event_db());
-        get_event_db() = nullptr;
-    }
-    assert(get_event_db());
-
-    if (sqlite3_open("./code/arginfo.db", &get_arginfo_db()) != SQLITE_OK) {
-        std::printf("Unable to open arginfo database: %s\n", sqlite3_errmsg(get_arginfo_db()));
-        sqlite3_close(get_arginfo_db());
-        get_arginfo_db() = nullptr;
-    }
-    assert(get_arginfo_db());
-    std::printf("Can join?\n");
- 
-    sqlite3_config(SQLITE_CONFIG_MULTITHREAD);
-
-    const char* create_events_sql = "PRAGMA journal_mode=wal;"
-                              "DROP TABLE IF EXISTS Events;"
-                              "DROP TABLE IF EXISTS EventMalloc;"
-                              "DROP TABLE IF EXISTS EventMemcpy;"
-                              "DROP TABLE IF EXISTS EventLaunch;"
-                              "DROP TABLE IF EXISTS EventFree;"
-                              "DROP TABLE IF EXISTS Code;"
-                              "DROP TABLE IF EXISTS ArgInfo;"
-                              "CREATE TABLE Code(Id INTEGER PRIMARY KEY, Path TEXT);"
-                              "CREATE TABLE Events(Id INTEGER PRIMARY KEY, EventType INT, Name TEXT, Rc INT, Stream INT);"
-                              "CREATE TABLE EventMalloc(Id INTEGER PRIMARY KEY, Stream INT, Ptr INT64, Size INT);"
-                              "CREATE TABLE EventMemcpy(Id INTEGER PRIMARY KEY, Stream INT, Dst INT64, Src INT64, Size INT, Kind INT, HostData BLOB);"
-                              "CREATE TABLE EventLaunch(Id INTEGER PRIMARY KEY, Stream INT, KernelName TEXT, NumX INT, NumY INT, NumZ INT,DimX INT, DimY INT, DimZ INT, SharedMem INT, ArgData BLOB);"
-                              "CREATE TABLE EventFree(Id INTEGER PRIMARY KEY, Stream INT, Ptr INT);"
-                              "CREATE TABLE ArgInfo(Id INTEGER PRIMARY KEY, KernelName TEXT, Ind INT, AddressSpace TEXT, Size INT, Offset INT, ValueKind TEXT, Access TEXT);";
-    const char* create_arginfo_sql = "PRAGMA synchronous = OFF;"
-                                     "PRAGMA journal_mode=OFF;"
-                                     "DROP TABLE IF EXISTS ArgInfo;"
-                              "CREATE TABLE ArgInfo(Id INTEGER PRIMARY KEY, KernelName TEXT, Ind INT, AddressSpace TEXT, Size INT, Offset INT, ValueKind TEXT, Access TEXT);";
-    if(sqlite3_exec(get_event_db(), create_events_sql, 0, 0, NULL)) {
-        std::printf("Error creating events table: %s\n", sqlite3_errmsg(get_event_db()));
-        sqlite3_close(get_event_db());
-        get_event_db() = nullptr;
-
-    }
-    assert(get_event_db());
-
-    if(sqlite3_exec(get_arginfo_db(), create_arginfo_sql, 0, 0, NULL)) {  
-        std::printf("Error creating arginfo table: %s\n", sqlite3_errmsg(get_arginfo_db()));
-        sqlite3_close(get_arginfo_db());
-        get_arginfo_db() = nullptr;
-    }
-    assert(get_arginfo_db());
-
-    get_library_loaded() = true;
-    if (!get_db_writer_thread()->joinable()) {
-        std::printf("Failed to start thread\n");
-    };
-}
-
-
-__attribute__((constructor)) void hiptracer_init()
-{
-    // Setup options
-    //auto as_bool = [](char* env) { return (env != NULL) && std::string(env) == "true"; };
-    std::printf("Using %d bytes for events\n", sizeof(gputrace_event) * MAX_ELEMS);
-    
-    //DEBUG = as_bool(std::getenv("HIPTRACER_DEBUG")); 
-    char* eventdb = std::getenv("HIPTRACER_EVENTDB");
-    if (eventdb != NULL) {
-        std::string& db_path = get_db_path();
-        db_path = std::string(eventdb);
-    }
-
-    char* tool = std::getenv("HIPTRACER_TOOL");
-    if (tool != NULL) {
-        std::printf("TOOL %s\n", tool);
-        HIPTRACER_TOOL& TOOL = get_tool();
-
-        if (std::string(tool) == "capture") {
-            TOOL = TOOL_CAPTURE;
-            init_capture();
-        } else if (std::string(tool) == "memtrace") {
-            TOOL = TOOL_MEMTRACE;
-        } else {
-            TOOL = TOOL_CAPTURE;
-            init_capture();
-        }
-    }
-}
-
-__attribute__((destructor)) void hiptracer_deinit()
-{
-    if (get_tool() == TOOL_CAPTURE) {
-        get_library_loaded() = false;
-        get_events_available().notify_all();
-
-        sqlite3_close(get_event_db());
-        sqlite3_close(get_arginfo_db());
-
-        if (get_db_writer_thread() != NULL) {
-            (*get_db_writer_thread()).join();
-        }
-    } else if (get_tool() = TOOL_MEMTRACE) {
-        
-    }
-}
-
 std::vector<std::byte> compress_data(void *data, size_t size)
 {
     size_t cBuffSize = ZSTD_compressBound(size);
@@ -363,7 +234,8 @@ int insert_event(gputrace_event event, sqlite3_stmt* pStmt)
 
 void prepare_events()
 {
-    std::printf("PREPARING\n");
+    std::printf("STARTING NEW THREAD\n");
+    auto event_db = get_event_db();
     sqlite3_stmt* eventStmt = NULL;
     sqlite3_stmt* mallocStmt = NULL;
     sqlite3_stmt* memcpyStmt = NULL;
@@ -379,13 +251,15 @@ void prepare_events()
     const char* freeSql = "INSERT INTO EventFree(Id, Stream, Ptr) VALUES(?, ?, ?);";
     const char* codeSql = "INSERT INTO Code(Path) VALUES(?)";
 
-    sqlite3*& g_event_db = get_event_db();
-    sqlite3_prepare_v2(g_event_db, eventSql, -1, &eventStmt, 0);
-    sqlite3_prepare_v2(g_event_db, memcpySql, -1, &memcpyStmt, 0);
-    sqlite3_prepare_v2(g_event_db, mallocSql, -1, &mallocStmt, 0);
-    sqlite3_prepare_v2(g_event_db, launchSql, -1, &launchStmt, 0);
-    sqlite3_prepare_v2(g_event_db, freeSql, -1, &freeStmt, 0);
-    sqlite3_prepare_v2(g_event_db, codeSql, -1, &codeStmt, 0);
+    sqlite3_prepare_v2(event_db, eventSql, -1, &eventStmt, 0);
+    sqlite3_prepare_v2(event_db, memcpySql, -1, &memcpyStmt, 0);
+    sqlite3_prepare_v2(event_db, mallocSql, -1, &mallocStmt, 0);
+    sqlite3_prepare_v2(event_db, launchSql, -1, &launchStmt, 0);
+    sqlite3_prepare_v2(event_db, freeSql, -1, &freeStmt, 0);
+    sqlite3_prepare_v2(event_db, codeSql, -1, &codeStmt, 0);   
+    
+    sqlite3* g_event_db = get_hiptracer_state().event_db;
+    std::printf("g_event_db %px\n", g_event_db); 
 
     char* errmsg = NULL;
     sqlite3_exec(g_event_db, "BEGIN TRANSACTION", NULL, NULL, &errmsg);
@@ -393,15 +267,16 @@ void prepare_events()
     std::printf("Prepared statements\n");
 	progressbar* progress = NULL;
     while(get_library_loaded()) {
-        while(!get_events_queue()->was_empty()) {      
+        std::printf("LIBRARY LOADED %d\n", get_library_loaded());
+        while(!get_events_queue().was_empty()) {     
             if (!get_library_loaded() && progress == NULL) {
                 // Display progress of remaining statements
-                size_t events_remaining = get_events_queue()->was_size();
-				progress = new progressbar(events_remaining);
-            }
+                size_t events_remaining = get_events_queue().was_size();
+                progress = new progressbar(events_remaining);
+            } 
             gputrace_event event;
             
-            get_events_queue()->try_pop(event);
+            get_events_queue().try_pop(event);
 
             if (event.type != EVENT_CODE) {
                 insert_event(event, eventStmt);
@@ -421,8 +296,8 @@ void prepare_events()
 				progress->update();
 			}
         }
-        if (get_events_queue()->was_empty() && get_library_loaded()) {
-            events_wait();
+        if (get_events_queue().was_empty() && get_library_loaded()) {
+            get_hiptracer_state().wait_for_events();
         }
     }
 
@@ -436,8 +311,6 @@ void prepare_events()
     sqlite3_finalize(freeStmt);
     sqlite3_finalize(launchStmt);
 }
-
-
 
 /*
    ****

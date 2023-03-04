@@ -176,7 +176,10 @@ int step_event(gputrace_event replay_event)
         int device = 0; // FIXME
 
         HIP_ASSERT(hipGetDeviceProperties(&my_devProp, device));
-    } else if (name == "hipStreamCreate") {
+    } else if (name == "hipDeviceSynchronize") {
+        HIP_ASSERT(hipDeviceSynchronize());
+    }
+    else if (name == "hipStreamCreate") {
         hipStream_t stream;
         HIP_ASSERT(hipStreamCreate(&stream));
 

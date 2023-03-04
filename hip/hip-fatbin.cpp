@@ -37,6 +37,7 @@ std::vector<Instr> get_instructions(std::string text) {
         offset += instr.size;
         i = decoder.decode();
     }
+    std::printf("INSTRUCTIONS SIZE %d\n", instructions.size());
     return instructions;
 }
 
@@ -59,8 +60,8 @@ void* __hipRegisterFatBinary(const void* data)
     if (hipRegisterFatBinary_fptr == NULL) {
         hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(get_rocm_lib(), "__hipRegisterFatBinary");
     }
-    if (get_handled_fatbins()->find((uint64_t) data) != get_handled_fatbins()->end()) {
-        if (get_handled_fatbins()->at((uint64_t) data)) return (*hipRegisterFatBinary_fptr)(data);
+    if (get_handled_fatbins().find((uint64_t) data) != get_handled_fatbins().end()) {
+        if (get_handled_fatbins().at((uint64_t) data)) return (*hipRegisterFatBinary_fptr)(data);
     }
 
     int register_event_id = get_curr_event()++;
@@ -122,7 +123,7 @@ void* __hipRegisterFatBinary(const void* data)
             gputrace_event_code code_event;
             // Make a copy of the code object here. 
             std::istringstream is(image); // FIXME: Makes a second copy?
-            getArgInfo(is, *get_kernel_arg_sizes(), register_event_id);
+            getArgInfo(is, get_kernel_arg_sizes(), register_event_id);
 
             code_event.code = image;
             code_event.filename = filename;
@@ -193,7 +194,7 @@ void* __hipRegisterFatBinary(const void* data)
         next = static_cast<const char*>(next) + chunk_size;
     }
 
-    get_handled_fatbins()->insert({(uint64_t)data, true });
+    get_handled_fatbins().insert({(uint64_t)data, true });
     return (*hipRegisterFatBinary_fptr)(data);
 }
 
@@ -231,25 +232,23 @@ hipError_t hipLaunchKernel(const void* function_address,
         XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
         uint64_t num_args = 0;
         std::printf("Looking up %d: \n", hash);
-        std::printf("Table has size %d: \n", get_kernel_arg_sizes()->size());
-        if (get_kernel_arg_sizes()->find(hash) != get_kernel_arg_sizes()->end()) {
-                num_args = get_kernel_arg_sizes()->at(hash).size;
+        std::printf("Table has size %d: \n", get_kernel_arg_sizes().size());
+        if (get_kernel_arg_sizes().find(hash) != get_kernel_arg_sizes().end()) {
+                num_args = get_kernel_arg_sizes().at(hash).size;
         }
-        std::printf("KERNEL NAME %s\n", kernel_name.c_str());
-        std::printf("NUM ARGS = %d\n", num_args);
 
         uint64_t total_size = 0;
         for(int i = 0; i < num_args; i++) {
             std::string key = kernel_name + std::to_string(i);
             hash = XXH64(key.data(), key.size(), 0);
-            SizeOffset size_offset = get_kernel_arg_sizes()->at(hash);
+            SizeOffset size_offset = get_kernel_arg_sizes().at(hash);
             total_size = size_offset.offset + size_offset.size;
         }
         std::vector<std::byte> arg_data(total_size);
         for (int i = 0; i < num_args; i++) {
             std::string key = kernel_name + std::to_string(i);
             hash = XXH64(key.data(), key.size(), 0);
-            SizeOffset size_offset = get_kernel_arg_sizes()->at(hash);
+            SizeOffset size_offset = get_kernel_arg_sizes().at(hash);
             //std::printf("ARG %d SIZE %d\n", i, size_offset.size);
             if (size_offset.size != 0 && args[i] != NULL) { 
                 std::memcpy(arg_data.data() + size_offset.offset, args[i], size_offset.size);

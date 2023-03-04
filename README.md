@@ -79,13 +79,14 @@ Capture sizes may be inaccurate if replay doesn't function.
 Replay indicates current status of replay tool with the program.
 "Slow?" indicates the program was slow to capture. Likely due to a large amount of host data.
 
-| Example Program | Capture Size | Replay Functionality |
-| ----------------| ------------ | -------------------  |
-| `vectoradd_hip` |    8.1M       | ⭕ |
-| `cuda-stream`   |    32K        | ❌ |
-| `strided-access` | 84K          | ❌ |
-| `reduction`     |  201M         | ❌ |
-| `kripke`        |   262M        | ❌ |
+| Example Program | Capture Size | Replay Functionality | Comments |
+| ----------------| ------------ | -------------------  | -------- |
+| `vectoradd_hip` |    8.1M       | ⭕ | |
+| `cuda-stream`   |    121K       | ⭕  | |
+| `strided-access` |12K          | ⭕   | |
+| `reduction`     |  13M          | ⭕ | |
+| `pytorch-word_language_model` | 305M | ❌ | Unknown kernel argument type "hidden" |
+| `kripke`        |   2.1M        | ❌ | Need VirtualMem to replay |
 
 # Issues
 
