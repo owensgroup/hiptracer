@@ -82,14 +82,14 @@ Some programs don't replay because of unknown kernel argument types.
 
 | Example Program | Capture Size | Replay Functionality | Comments |
 | ----------------| ------------ | -------------------  | -------- |
-| `vectoradd_hip` |   2.6M       | ⭕ | |
-| `cuda-stream`   |    121K       | ⭕  | |
-| `strided-access` |12K          | ⭕   | |
-| `reduction`     |  13M          | ⭕ | |
+| `vectoradd_hip` |   2.6M       | ✅ | |
+| `cuda-stream`   |    121K       | ✅  | |
+| `strided-access` |12K          | ✅   | |
+| `reduction`     |  13M          | ✅ | |
 | `pytorch-word_language_model` | 305M | ❌ | Unknown kernel argument type "hidden" |
 | `kripke`        |   2.1M        | ❌ | Need VirtualMem to replay |
 
 # Issues
 
-* Replay is very problematic right now, need to add Synchronize events
-* Multiple devices do not work
+* Replay is very problematic right now. Simple sequences of API calls should work, but some types of kernel launches will fail.
+* Only supports gfx908.
