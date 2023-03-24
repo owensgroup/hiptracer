@@ -77,6 +77,10 @@ void pushback_event(gputrace_event event)
     static bool notified = false;
     static bool prepared = false;
     
+    if (get_hiptracer_state().tool == TOOL_MEMTRACE) {
+        return;
+    }
+    
     if (!prepared) {
         get_hiptracer_state().db_writer_thread = new std::thread(prepare_events);
         prepared = true;
@@ -234,7 +238,7 @@ int insert_event(gputrace_event event, sqlite3_stmt* pStmt)
 
 void prepare_events()
 {
-    std::printf("STARTING NEW THREAD\n");
+    //std::printf("STARTING NEW THREAD\n");
     auto event_db = get_event_db();
     sqlite3_stmt* eventStmt = NULL;
     sqlite3_stmt* mallocStmt = NULL;
@@ -264,10 +268,10 @@ void prepare_events()
     char* errmsg = NULL;
     sqlite3_exec(g_event_db, "BEGIN TRANSACTION", NULL, NULL, &errmsg);
 
-    std::printf("Prepared statements\n");
+    //std::printf("Prepared statements\n");
 	progressbar* progress = NULL;
     while(get_library_loaded()) {
-        std::printf("LIBRARY LOADED %d\n", get_library_loaded());
+        //std::printf("LIBRARY LOADED %d\n", get_library_loaded());
         while(!get_events_queue().was_empty()) {     
             if (!get_library_loaded() && progress == NULL) {
                 // Display progress of remaining statements

@@ -21,23 +21,41 @@
 
 struct Instr {
     std::string cdna;
+    int num_operands = 0;
+    size_t size = 0;
+    size_t offset = 0;
+
     const char* getCdna() {
         return cdna.c_str();
     }
-    uint32_t getOffset();
-    uint32_t getIdx();
+    uint32_t getOffset() {
+        return offset;
+    }
 
     //const char* getOpcode();
 
-    bool isLoad();
-    bool isStore();
+    bool isLoad() {
+        assert(cdna.size() > 0);
+        //std::printf("CHECKING IF LOAD\n");
+        if (cdna.size() <= 0) {
+            return false;
+        }
+        //std::printf("CDNA %s\n", cdna.c_str());
+        return cdna.find("GLOBAL_LOAD") != std::string::npos;
+    }
+    bool isStore() {
+        assert(cdna.size() > 0);
+        //std::printf("CHECKING IF STORE\n");
+        if (cdna.size() <= 0) {
+            return false;
+        }
+        //std::printf("CDNA %s\n", cdna.c_str());
+        return cdna.find("GLOBAL_STORE") != std::string::npos;
+    }
     bool isBranch();
 
     int getNumOperands();
 
-    int num_operands;
-    size_t size;
-    size_t offset;
 };
 
 enum HIP_EVENT {
@@ -108,6 +126,9 @@ void prepare_events();
 
 #define MAX_ELEMS 8192*4
 struct hiptracer_state {
+    hipError_t  (*malloc_fptr)(void**, size_t) = NULL;
+    uint64_t* memtrace = NULL;
+
     atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
     std::thread* db_writer_thread = nullptr;
     std::mutex mx;
@@ -188,14 +209,14 @@ struct hiptracer_state {
     hiptracer_state() {
         // Setup options
         //auto as_bool = [](char* env) { return (env != NULL) && std::string(env) == "true"; };
-        std::printf("Using %d bytes for events\n", sizeof(gputrace_event) * MAX_ELEMS);
+        //std::printf("Using %d bytes for events\n", sizeof(gputrace_event) * MAX_ELEMS);
     
-        std::printf("OPENING %s\n", rocm_path.c_str());
+        //std::printf("OPENING %s\n", rocm_path.c_str());
         rocm_lib = dlopen(rocm_path.c_str(), RTLD_LAZY | RTLD_LOCAL);        
         if (rocm_lib == NULL) {
             std::printf("Unable to open libamdhip64.so\n");
         }
-        std::printf("OPENED\n");
+        //std::printf("OPENED\n");
         assert(rocm_lib);
     
         //DEBUG = as_bool(std::getenv("HIPTRACER_DEBUG")); 
@@ -209,13 +230,24 @@ struct hiptracer_state {
 
         char* tool_str = std::getenv("HIPTRACER_TOOL");
         if (tool_str != NULL) {
-            std::printf("TOOL %s\n", tool_str);
+            //std::printf("TOOL %s\n", tool_str);
 
             if (std::string(tool_str) == "capture") {
                 tool = TOOL_CAPTURE;
                 init_capture();
             } else if (std::string(tool_str) == "memtrace") {
                 tool = TOOL_MEMTRACE;
+            
+                if (malloc_fptr == NULL) {
+                    malloc_fptr = (hipError_t (*) (void**, size_t)) dlsym(rocm_lib, "hipMalloc");
+                }
+                assert(malloc_fptr);
+
+                // Allocate memory for traced addresses
+                malloc_fptr((void**)&memtrace, 1024 * sizeof(uint64_t));
+
+                assert(memtrace);
+                std::printf("memtrace pointer %p\n", memtrace);
             } else {
                 tool = TOOL_CAPTURE;
                 init_capture();

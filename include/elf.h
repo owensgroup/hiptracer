@@ -50,8 +50,9 @@ struct ArgInfo {
     std::string access;
 };
 
+// TODO: FIXME FIXME FIXME
 inline void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOffset>& argument_sizes, int curr_event)
-{
+{ 
     // Print ELF file sections info
     ELFIO::Elf_Half sec_num = reader.sections.size(); 
 	//std::cout <<" Sections " << sec_num << std::endl;
@@ -153,7 +154,7 @@ inline void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOf
                                 std::string arg_key = kernel_name + std::to_string(i);
                                 XXH64_hash_t hash = XXH64(arg_key.data(), arg_key.size(), 0);
                                 argument_sizes[hash] = size_offset;
-                                std::printf("Inserting %d : %d \n", hash, size_offset.size);
+                                //std::printf("Inserting %d : %d \n", hash, size_offset.size);
                             }
                             SizeOffset kern_num_args;
                             kern_num_args.size = arg_infos.size();
@@ -161,7 +162,7 @@ inline void getArgInfo(ELFIO::elfio& reader, ska::flat_hash_map<uint64_t, SizeOf
 
                             XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
                             argument_sizes[hash] = kern_num_args;
-                            std::printf("Inserting %d : %d \n", hash, kern_num_args.size);
+                            //std::printf("Inserting %d : %d \n", hash, kern_num_args.size);
                             arg_infos.clear();
                         }
                     }

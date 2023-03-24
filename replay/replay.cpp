@@ -456,7 +456,7 @@ int main()
                 sqlite3_step(pStmt);
                 sqlite3_finalize(pStmt); // FIXME
 
-                //std::printf("\t Event ID: %d\t Elapsed: %f\t Name: %s\t \n", event.id, elapsed, event.name);
+                std::printf("\t Event ID: %d\t Elapsed: %f\t Name: %s\t \n", event.id, elapsed, event.name);
             }
         }
 

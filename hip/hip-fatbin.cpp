@@ -66,7 +66,7 @@ void* __hipRegisterFatBinary(const void* data)
 
     int register_event_id = get_curr_event()++;
     if (register_event_id % 100 == 0) {
-        std::printf("%d\n", register_event_id);
+        //std::printf("%d\n", register_event_id);
     }
 
     struct fb_wrapper {
@@ -89,7 +89,7 @@ void* __hipRegisterFatBinary(const void* data)
     const fb_header* fbheader = static_cast<const fb_header*>(fbwrapper->binary);
 
     const void* next = static_cast<const char*>(fbwrapper->binary) + sizeof(fb_header);
-    std::printf("num bundles %d\n", fbheader->numBundles);
+    //std::printf("num bundles %d\n", fbheader->numBundles);
     for(int i = 0; i < fbheader->numBundles; i++) {
         struct code_desc {
             uint64_t offset;
@@ -113,7 +113,7 @@ void* __hipRegisterFatBinary(const void* data)
             next = static_cast<const char*>(next) + chunk_size;
             continue;
         }
-        std::printf("TRIPLE %s\n", triple.data());
+        //std::printf("TRIPLE %s\n", triple.data());
 
         std::string filename = std::string("./code/") + std::string(triple) + "-" + std::to_string(get_curr_event()) + "-" + std::to_string(i) + ".code";
         std::string image{static_cast<const char*>(fbwrapper->binary) + descriptor->offset, descriptor->size};
@@ -156,36 +156,34 @@ void* __hipRegisterFatBinary(const void* data)
 						for (int i = 0; i < instructions.size(); i++) {
 							Instr instr = instructions[i];
                             //std::printf("Instr %d: %s\n", i, instr.getCdna());
-                            /*
-							if (instr.isLoad() || instr.isStore()) {
-								uint32_t offset = instr.getOffset();
-								uint32_t jump = image.size() - offset;
-								uint32_t new_inst = 0xBF820000;
-								uint32_t ret_inst = 0xBF820000;
+							if (instr.isLoad() || instr.isStore()) { 
+                                std::printf("IS LOAD OR STORE\n");
+								//uint32_t offset = instr.getOffset();
+								//uint32_t jump = image.size() - offset;
+								//uint32_t new_inst = 0xBF820000;
+								//uint32_t ret_inst = 0xBF820000;
 
-								new_inst |= (jump / 4) - 1;
+								//new_inst |= (jump / 4) - 1;
 
-								std::printf("NEW INST 0x%dx", new_inst);
+								////std::printf("NEW INST 0x%dx", new_inst);
 
-            					uint32_t old_inst = 0x0; // FIXME ~ Target instr could be 64 bits, ask llvm-mc / DynInst
-            					std::memcpy(&old_inst, &text[offset], sizeof(old_inst));
-            					std::memcpy(&text[offset], &new_inst, sizeof(old_inst));	
-            					
-            					psec->set_data(&text[0], text.size());
-            					
-            					uint32_t new_code = 0x8004FF80;
-            					uint32_t new_code2 = 0x4048F5C3;
-            					uint32_t new_code3 = 0x7E0C0204;
-            					psec->append_data((char*) &new_code, sizeof(new_code));
-            					psec->append_data((char*) &new_code2, sizeof(new_code2));
-            					psec->append_data((char*) &new_code3, sizeof(new_code3));
-            					psec->append_data((char*) &old_inst, sizeof(old_inst));
-            					psec->append_data((char*) &ret_inst, sizeof(ret_inst));
-            					
-            					reader.save(filename.c_str());
+            					//uint32_t old_inst = 0x0; // FIXME ~ Target instr could be 64 bits, ask llvm-mc / DynInst
+            					//std::memcpy(&old_inst, &text[offset], sizeof(old_inst));
+            					//std::memcpy(&text[offset], &new_inst, sizeof(old_inst));	
+            					//
+            					//psec->set_data(&text[0], text.size());
+            					//
+            					//uint32_t new_code = 0x8004FF80;
+            					//uint32_t new_code2 = 0x4048F5C3;
+            					//uint32_t new_code3 = 0x7E0C0204;
+            					//psec->append_data((char*) &new_code, sizeof(new_code));
+            					//psec->append_data((char*) &new_code2, sizeof(new_code2));
+            					//psec->append_data((char*) &new_code3, sizeof(new_code3));
+            					//psec->append_data((char*) &old_inst, sizeof(old_inst));
+            					//psec->append_data((char*) &ret_inst, sizeof(ret_inst));            				
 							}
-                            */
 						}	
+            		    reader.save(filename.c_str()); 
 					}
 				}
 			}
@@ -231,8 +229,8 @@ hipError_t hipLaunchKernel(const void* function_address,
 
         XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
         uint64_t num_args = 0;
-        std::printf("Looking up %d: \n", hash);
-        std::printf("Table has size %d: \n", get_kernel_arg_sizes().size());
+        //std::printf("Looking up %d: \n", hash);
+        //std::printf("Table has size %d: \n", get_kernel_arg_sizes().size());
         if (get_kernel_arg_sizes().find(hash) != get_kernel_arg_sizes().end()) {
                 num_args = get_kernel_arg_sizes().at(hash).size;
         }
@@ -253,6 +251,7 @@ hipError_t hipLaunchKernel(const void* function_address,
             if (size_offset.size != 0 && args[i] != NULL) { 
                 std::memcpy(arg_data.data() + size_offset.offset, args[i], size_offset.size);
             } else {
+                // "HIDDEN" case
                 std::memcpy(arg_data.data() + size_offset.offset, &(args[i]), sizeof(void**));
             }
         }
@@ -276,9 +275,8 @@ hipError_t hipLaunchKernel(const void* function_address,
 
         pushback_event(event);
     } else if (get_tool() == TOOL_MEMTRACE) {
-        
+        // Get modified form of kernel
     }
-
 
     return result;
 }
