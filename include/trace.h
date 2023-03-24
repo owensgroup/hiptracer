@@ -25,6 +25,8 @@ struct Instr {
     size_t size = 0;
     size_t offset = 0;
 
+    std::vector<char> data;
+
     const char* getCdna() {
         return cdna.c_str();
     }
@@ -128,6 +130,8 @@ void prepare_events();
 struct hiptracer_state {
     hipError_t  (*malloc_fptr)(void**, size_t) = NULL;
     uint64_t* memtrace = NULL;
+
+    std::vector<std::string> filenames;
 
     atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
     std::thread* db_writer_thread = nullptr;
@@ -284,6 +288,7 @@ std::string& get_rocm_path();
 void*& get_rocm_lib();
 ska::flat_hash_map<uint64_t, SizeOffset>& get_kernel_arg_sizes();
 ska::flat_hash_map<uint64_t, bool>& get_handled_fatbins();
+std::vector<std::string>& get_filenames();
 void events_wait();
 void pushback_event(gputrace_event event);
 

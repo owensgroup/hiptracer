@@ -34,6 +34,10 @@ __attribute__((constructor)) void hiptracer_init() {
 atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS>& get_events_queue() {
     return get_hiptracer_state().events_queue;
 }
+
+std::vector<std::string>& get_filenames() {
+    return get_hiptracer_state().filenames;
+}
 std::atomic<int>& get_curr_event() {
     return get_hiptracer_state().curr_event;
 }

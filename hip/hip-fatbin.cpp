@@ -6,6 +6,7 @@
 
 // DynInst
 #include "InstructionDecoder.h"
+#include "InsnFactory.h"
 
 #include "elf.h"
 #include "trace.h"
@@ -30,6 +31,11 @@ std::vector<Instr> get_instructions(std::string text) {
         instr.offset = offset;
         instr.cdna = std::string(i.format(instr.offset));
         instr.size = i.size();
+
+        std::vector<char> data(i.size());
+        std::memcpy(data.data(), i.ptr(), i.size());
+        instr.data = data;
+
         //instr.num_operands = i.getNumOperands();
 
         instructions.push_back(instr);
@@ -118,12 +124,12 @@ void* __hipRegisterFatBinary(const void* data)
         std::string filename = std::string("./code/") + std::string(triple) + "-" + std::to_string(get_curr_event()) + "-" + std::to_string(i) + ".code";
         std::string image{static_cast<const char*>(fbwrapper->binary) + descriptor->offset, descriptor->size};
 
+        std::istringstream is(image); // FIXME: Makes a second copy?
+        getArgInfo(is, get_kernel_arg_sizes(), register_event_id);
+
         if (get_tool() == TOOL_CAPTURE) {
             gputrace_event event;
             gputrace_event_code code_event;
-            // Make a copy of the code object here. 
-            std::istringstream is(image); // FIXME: Makes a second copy?
-            getArgInfo(is, get_kernel_arg_sizes(), register_event_id);
 
             code_event.code = image;
             code_event.filename = filename;
@@ -151,15 +157,29 @@ void* __hipRegisterFatBinary(const void* data)
 				if (psec) {
 					std::string sec_name = psec->get_name();
 					if (sec_name == std::string(".text")) {
+                        std::printf("Instructions length originally %d bytes\n", psec->get_size());
 						std::string text{static_cast<const char*>(psec->get_data()), psec->get_size()};
-						std::vector<Instr> instructions = get_instructions(text);
+						std::vector<Instr> instructions = get_instructions(text); 
 						for (int i = 0; i < instructions.size(); i++) {
 							Instr instr = instructions[i];
+                            uint32_t base = 0;
+                            if (i == 0) {
+                                base = instr.offset;
+                            }
+
                             //std::printf("Instr %d: %s\n", i, instr.getCdna());
 							if (instr.isLoad() || instr.isStore()) { 
                                 std::printf("IS LOAD OR STORE\n");
-								//uint32_t offset = instr.getOffset();
-								//uint32_t jump = image.size() - offset;
+								uint32_t offset = instr.getOffset();	
+
+                                std::vector<char*> instr_pool;
+                                auto jumpto = InsnFactory::create_s_branch(offset, base + psec->get_size(), NULL, instr_pool);
+                                auto jumpback = InsnFactory::create_s_branch(base + psec->get_size(), offset, NULL, instr_pool);
+
+                                assert(jumpto.size <= instr.size);
+ 
+                                std::memcpy(&text[offset], jumpto.ptr, jumpto.size);
+
 								//uint32_t new_inst = 0xBF820000;
 								//uint32_t ret_inst = 0xBF820000;
 
@@ -171,7 +191,7 @@ void* __hipRegisterFatBinary(const void* data)
             					//std::memcpy(&old_inst, &text[offset], sizeof(old_inst));
             					//std::memcpy(&text[offset], &new_inst, sizeof(old_inst));	
             					//
-            					//psec->set_data(&text[0], text.size());
+            					//psec->set_data(&curr_text[0], text.size());
             					//
             					//uint32_t new_code = 0x8004FF80;
             					//uint32_t new_code2 = 0x4048F5C3;
@@ -181,9 +201,23 @@ void* __hipRegisterFatBinary(const void* data)
             					//psec->append_data((char*) &new_code3, sizeof(new_code3));
             					//psec->append_data((char*) &old_inst, sizeof(old_inst));
             					//psec->append_data((char*) &ret_inst, sizeof(ret_inst));            				
+
+                                psec->append_data(instr.data.data(), instr.data.size());
+                                psec->append_data((char*) jumpback.ptr, jumpback.size);  
 							}
 						}	
+
+						std::string newtext{static_cast<const char*>(psec->get_data()), psec->get_size()};
+
+                        for (int i = 0; i < text.size(); i++) {
+                            newtext[i] = text[i];
+                        }
+
+                        psec->set_data(&newtext[0], newtext.size());
+
+                        std::printf("Instructions length now %d bytes \n", psec->get_size());
             		    reader.save(filename.c_str()); 
+                        get_filenames().push_back(filename);
 					}
 				}
 			}
@@ -222,39 +256,41 @@ hipError_t hipLaunchKernel(const void* function_address,
         hipModuleGetFunction_fptr = ( hipError_t (*) (hipFunction_t*, hipModule_t, const char*)) dlsym(get_rocm_lib(), "hipModuleGetFunction");
     }
 
-    hipError_t result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
+    std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
 
+
+    XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
+    uint64_t num_args = 0;
+    //std::printf("Looking up %d: \n", hash);
+    //std::printf("Table has size %d: \n", get_kernel_arg_sizes().size());
+    if (get_kernel_arg_sizes().find(hash) != get_kernel_arg_sizes().end()) {
+            num_args = get_kernel_arg_sizes().at(hash).size;
+    }
+
+    uint64_t total_size = 0;
+    for(int i = 0; i < num_args; i++) {
+        std::string key = kernel_name + std::to_string(i);
+        hash = XXH64(key.data(), key.size(), 0);
+        SizeOffset size_offset = get_kernel_arg_sizes().at(hash);
+        total_size = size_offset.offset + size_offset.size;
+    }
+    std::vector<std::byte> arg_data(total_size);
+    for (int i = 0; i < num_args; i++) {
+        std::string key = kernel_name + std::to_string(i);
+        hash = XXH64(key.data(), key.size(), 0);
+        SizeOffset size_offset = get_kernel_arg_sizes().at(hash);
+        //std::printf("ARG %d SIZE %d\n", i, size_offset.size);
+        if (size_offset.size != 0 && args[i] != NULL) { 
+            std::memcpy(arg_data.data() + size_offset.offset, args[i], size_offset.size);
+        } else {
+            // "HIDDEN" case
+            std::memcpy(arg_data.data() + size_offset.offset, &(args[i]), sizeof(void**));
+        }
+    }
+
+    hipError_t result;
     if (get_tool() == TOOL_CAPTURE) {
-        std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
-
-        XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
-        uint64_t num_args = 0;
-        //std::printf("Looking up %d: \n", hash);
-        //std::printf("Table has size %d: \n", get_kernel_arg_sizes().size());
-        if (get_kernel_arg_sizes().find(hash) != get_kernel_arg_sizes().end()) {
-                num_args = get_kernel_arg_sizes().at(hash).size;
-        }
-
-        uint64_t total_size = 0;
-        for(int i = 0; i < num_args; i++) {
-            std::string key = kernel_name + std::to_string(i);
-            hash = XXH64(key.data(), key.size(), 0);
-            SizeOffset size_offset = get_kernel_arg_sizes().at(hash);
-            total_size = size_offset.offset + size_offset.size;
-        }
-        std::vector<std::byte> arg_data(total_size);
-        for (int i = 0; i < num_args; i++) {
-            std::string key = kernel_name + std::to_string(i);
-            hash = XXH64(key.data(), key.size(), 0);
-            SizeOffset size_offset = get_kernel_arg_sizes().at(hash);
-            //std::printf("ARG %d SIZE %d\n", i, size_offset.size);
-            if (size_offset.size != 0 && args[i] != NULL) { 
-                std::memcpy(arg_data.data() + size_offset.offset, args[i], size_offset.size);
-            } else {
-                // "HIDDEN" case
-                std::memcpy(arg_data.data() + size_offset.offset, &(args[i]), sizeof(void**));
-            }
-        }
+        result = (*hipLaunchKernel_fptr)(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
 
         gputrace_event event;
         gputrace_event_launch launch_event;
@@ -276,7 +312,26 @@ hipError_t hipLaunchKernel(const void* function_address,
         pushback_event(event);
     } else if (get_tool() == TOOL_MEMTRACE) {
         // Get modified form of kernel
-    }
+
+        std::vector<hipModule_t> modules;
+
+        for (int i = 0; i < get_filenames().size(); i++) {
+            hipModule_t module;
+            hipModuleLoad_fptr(&module, get_filenames()[i].c_str());
+            modules.push_back(module);
+        } 
+
+        hipFunction_t function;
+        for (int i = 0; i < modules.size(); i++) {
+            hipError_t ret = hipModuleGetFunction_fptr(&function, modules[i], kernel_name.c_str());
+            if (ret == hipSuccess) {
+                break; 
+            }
+        }
+
+        hipModuleLaunchKernel(function, numBlocks.x, numBlocks.y, numBlocks.z, dimBlocks.x, dimBlocks.y, dimBlocks.z, sharedMemBytes,
+                              stream, args, NULL);
+    } 
 
     return result;
 }
