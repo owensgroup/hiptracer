@@ -43,7 +43,7 @@ struct Instr {
             return false;
         }
         //std::printf("CDNA %s\n", cdna.c_str());
-        return cdna.find("GLOBAL_LOAD") != std::string::npos;
+        return cdna.find("LOAD") != std::string::npos;
     }
     bool isStore() {
         assert(cdna.size() > 0);
@@ -52,7 +52,15 @@ struct Instr {
             return false;
         }
         //std::printf("CDNA %s\n", cdna.c_str());
-        return cdna.find("GLOBAL_STORE") != std::string::npos;
+        return cdna.find("STORE") != std::string::npos;
+    }
+    bool isFlat() {
+        assert(cdna.size() > 0);
+
+        if (cdna.size() <= 0) {
+            return false;
+        }
+        return cdna.find("GLOBAL") != std::string::npos || cdna.find("FLAT") != std::string::npos;
     }
     bool isBranch();
 

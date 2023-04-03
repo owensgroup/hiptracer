@@ -168,7 +168,8 @@ void* __hipRegisterFatBinary(const void* data)
                             }
 
                             //std::printf("Instr %d: %s\n", i, instr.getCdna());
-							if (instr.isLoad() || instr.isStore()) { 
+							if ((instr.isLoad() || instr.isStore()) && instr.isFlat()) { 
+
                                 std::printf("IS LOAD OR STORE\n");
 								uint32_t offset = instr.getOffset();	
 
@@ -179,6 +180,45 @@ void* __hipRegisterFatBinary(const void* data)
                                 assert(jumpto.size <= instr.size);
  
                                 std::memcpy(&text[offset], jumpto.ptr, jumpto.size);
+
+                                uint32_t next_free_vreg = 65; // TODO: Compute next register from kernel descriptor
+
+                                auto savev0 = InsnFactory::create_v_mov_b32(next_free_vreg, 0, instr_pool);
+                                auto savev1 = InsnFactory::create_v_mov_b32(next_free_vreg + 1, 1, instr_pool);
+                                auto savev2 = InsnFactory::create_v_mov_b32(next_free_vreg + 2, 2, instr_pool);
+                                auto saves0 = InsnFactory::create_v_writelane_b32(next_free_vreg + 3, instr_pool);
+                                auto saves1 = InsnFactory::create_v_writelane_b32(next_free_vreg + 4, instr_pool);
+
+                                uint32_t v_registers_moved = 3;
+
+                                // MEMTRACE
+                                // v_mov_b32_e32 vXX, v0
+                                // v_mov_b32_e32 vYY, v1
+                                // v_mov_b32_e32 vZZ, v2
+                                // s_mov_b64 vWW, s[0:1] ???
+                                //         v_cmp_eq_u32_e32 vcc, 0, v0                                // 000000001000: 7D940080
+        						// s_and_saveexec_b64 s[0:1], vcc                             // 000000001004: BE80206A
+        						// s_cbranch_execz 21                                         // 000000001008: BF880015 <_Z15vectoradd_floatPfPKfS1_ii+0x60>
+        						// v_mov_b32_e32 v0, 0xbeefbeef                               // 00000000100C: 7E0002FF BEEFBEEF
+        						// v_mov_b32_e32 v1, 0                                        // 000000001014: 7E020280
+        						// v_mov_b32_e32 v2, 1                                        // 000000001018: 7E040281
+        						// flat_atomic_add v0, v[0:1], v2 glc                         // 00000000101C: DD090000 00000200
+        						// s_movk_i32 s0, 0x400                                       // 000000001024: B0000400
+        						// s_waitcnt vmcnt(0) lgkmcnt(0)                              // 000000001028: BF8C0070
+        						// v_cmp_gt_i32_e32 vcc, s0, v0                               // 00000000102C: 7D880000
+        						// s_and_b64 exec, exec, vcc                                  // 000000001030: 86FE6A7E
+        						// s_cbranch_execz 10                                         // 000000001034: BF88000A <_Z15vectoradd_floatPfPKfS1_ii+0x60>
+        						// v_ashrrev_i32_e32 v1, 31, v0                               // 000000001038: 2202009F
+        						// v_lshlrev_b64 v[0:1], 2, v[0:1]                            // 00000000103C: D28F0000 00020082
+        						// v_mov_b32_e32 v2, 0xcccccccc                               // 000000001044: 7E0402FF CCCCCCCC
+        						// v_add_co_u32_e32 v0, vcc, 0xdeadb000, v0                   // 00000000104C: 320000FF DEADB000
+        						// v_addc_co_u32_e32 v1, vcc, 0, v1, vcc                      // 000000001054: 38020280
+        						// flat_store_dword v[0:1], v2 offset:3823                    // 000000001058: DC700EEF 00000200
+        						// s_endpgm                                                   // 000000001060: BF810000
+                                // v_mov_b32_e32 v0, vXX
+                                // v_mov_b32_e32 v1, vYY
+                                // v_mov_b32_e32 v2, vZZ
+                                // s_mov_b64 s[0:1], vWW
 
 								//uint32_t new_inst = 0xBF820000;
 								//uint32_t ret_inst = 0xBF820000;
@@ -202,10 +242,40 @@ void* __hipRegisterFatBinary(const void* data)
             					//psec->append_data((char*) &old_inst, sizeof(old_inst));
             					//psec->append_data((char*) &ret_inst, sizeof(ret_inst));            				
 
+                                uint32_t address_register = get_addr_from_flat(instr.data);
+                                if (address_register < v_registers_moved - 1) {
+                                    address_register += next_free_vreg;
+                                }
+                                uint32_t mov_addr = 0x7E040200 | address_register;
+                                std::printf("FOUND ADDRESS REGISTER %d\n", address_register);
+
+                                uint32_t atomic_addr_low = 0xbeefbeef;
+                                uint32_t atomic_addr_high = 0xdeaddead;
+                                uint32_t buffer_addr_low = 
+								uint32_t memtrace_code[ ] = { 0x7D940080, 0xBE80206A, 0xBF880015, 0x7E0002FF, atomic_addr_low, 0x7E0202FF, , atomic_addr_high, 0x7E040281,
+                                                              0xDD090000, 0x00000200, 0xB0000400, 0xBF8C0070, 0x7D880000,  0x86FE6A7E, 0xBF88000A, 0x2202009F,
+                                                              0xD28F0000, 0x00020082, mov_addr };
+
+                                psec->append_data((char*) savev0.ptr, savev0.size);
+                                psec->append_data((char*) savev1.ptr, savev1.size);
+                                psec->append_data((char*) savev2.ptr, savev2.size);
+                                psec->append_data((char*) saves0.ptr, saves0.size);
+                                psec->append_data((char*) saves1.ptr, saves1.size);
+
+                                psec->append_data((char*) memtrace_code, sizeof(memtrace_code));
+
                                 psec->append_data(instr.data.data(), instr.data.size());
-                                psec->append_data((char*) jumpback.ptr, jumpback.size);  
+                                psec->append_data((char*) jumpback.ptr, jumpback.size); 
+
+                                std::free(jumpto.ptr);
+                                std::free(jumpback.ptr);
+                                std::free(savev0.ptr);
+                                std::free(savev1.ptr);
+                                std::free(savev2.ptr);
+                                std::free(saves0.ptr);
+                                std::free(saves1.ptr);
 							}
-						}	
+						}
 
 						std::string newtext{static_cast<const char*>(psec->get_data()), psec->get_size()};
 
