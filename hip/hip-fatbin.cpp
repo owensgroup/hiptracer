@@ -168,7 +168,7 @@ void* __hipRegisterFatBinary(const void* data)
                             }
 
                             //std::printf("Instr %d: %s\n", i, instr.getCdna());
-							if ((instr.isLoad() || instr.isStore()) && instr.isFlat()) { 
+							if ((instr.isLoad() || instr.isStore()) && instr.isGlobal()) { 
 
                                 std::printf("IS LOAD OR STORE\n");
 								uint32_t offset = instr.getOffset();	
@@ -186,8 +186,8 @@ void* __hipRegisterFatBinary(const void* data)
                                 auto savev0 = InsnFactory::create_v_mov_b32(next_free_vreg, 0, instr_pool);
                                 auto savev1 = InsnFactory::create_v_mov_b32(next_free_vreg + 1, 1, instr_pool);
                                 auto savev2 = InsnFactory::create_v_mov_b32(next_free_vreg + 2, 2, instr_pool);
-                                auto saves0 = InsnFactory::create_v_writelane_b32(next_free_vreg + 3, instr_pool);
-                                auto saves1 = InsnFactory::create_v_writelane_b32(next_free_vreg + 4, instr_pool);
+                                auto saves0 = InsnFactory::create_v_writelane_b32(next_free_vreg + 3, 0, 0, instr_pool);
+                                auto saves1 = InsnFactory::create_v_writelane_b32(next_free_vreg + 4, 0, 1, instr_pool);
 
                                 uint32_t v_registers_moved = 3;
 
@@ -220,30 +220,9 @@ void* __hipRegisterFatBinary(const void* data)
                                 // v_mov_b32_e32 v2, vZZ
                                 // s_mov_b64 s[0:1], vWW
 
-								//uint32_t new_inst = 0xBF820000;
-								//uint32_t ret_inst = 0xBF820000;
-
-								//new_inst |= (jump / 4) - 1;
-
-								////std::printf("NEW INST 0x%dx", new_inst);
-
-            					//uint32_t old_inst = 0x0; // FIXME ~ Target instr could be 64 bits, ask llvm-mc / DynInst
-            					//std::memcpy(&old_inst, &text[offset], sizeof(old_inst));
-            					//std::memcpy(&text[offset], &new_inst, sizeof(old_inst));	
-            					//
-            					//psec->set_data(&curr_text[0], text.size());
-            					//
-            					//uint32_t new_code = 0x8004FF80;
-            					//uint32_t new_code2 = 0x4048F5C3;
-            					//uint32_t new_code3 = 0x7E0C0204;
-            					//psec->append_data((char*) &new_code, sizeof(new_code));
-            					//psec->append_data((char*) &new_code2, sizeof(new_code2));
-            					//psec->append_data((char*) &new_code3, sizeof(new_code3));
-            					//psec->append_data((char*) &old_inst, sizeof(old_inst));
-            					//psec->append_data((char*) &ret_inst, sizeof(ret_inst));            				
-
-                                uint32_t address_register = get_addr_from_flat(instr.data);
+                                uint32_t address_register = InsnFactory::get_addr_from_flat(instr.data);
                                 if (address_register < v_registers_moved - 1) {
+                                    std::printf("GOD %d from FLAT \n", address_register);
                                     address_register += next_free_vreg;
                                 }
                                 uint32_t mov_addr = 0x7E040200 | address_register;
@@ -251,10 +230,11 @@ void* __hipRegisterFatBinary(const void* data)
 
                                 uint32_t atomic_addr_low = 0xbeefbeef;
                                 uint32_t atomic_addr_high = 0xdeaddead;
-                                uint32_t buffer_addr_low = 
-								uint32_t memtrace_code[ ] = { 0x7D940080, 0xBE80206A, 0xBF880015, 0x7E0002FF, atomic_addr_low, 0x7E0202FF, , atomic_addr_high, 0x7E040281,
+                                //uint32_t buffer_addr_low = 
+								const uint32_t memtrace_code[] = { 0x7D940080, 0xBE80206A, 0xBF880015, 0x7E0002FF, atomic_addr_low, 0x7E0202FF, atomic_addr_high, 0x7E040281,
                                                               0xDD090000, 0x00000200, 0xB0000400, 0xBF8C0070, 0x7D880000,  0x86FE6A7E, 0xBF88000A, 0x2202009F,
-                                                              0xD28F0000, 0x00020082, mov_addr };
+                                                              0xD28F0000, 0x00020082};
+                                auto move_addr_low = InsnFactory::create_v_mov_b32(2, address_register, instr_pool);
 
                                 psec->append_data((char*) savev0.ptr, savev0.size);
                                 psec->append_data((char*) savev1.ptr, savev1.size);
@@ -263,6 +243,7 @@ void* __hipRegisterFatBinary(const void* data)
                                 psec->append_data((char*) saves1.ptr, saves1.size);
 
                                 psec->append_data((char*) memtrace_code, sizeof(memtrace_code));
+                                psec->append_data((char*) move_addr_low.ptr, move_addr_low.size);
 
                                 psec->append_data(instr.data.data(), instr.data.size());
                                 psec->append_data((char*) jumpback.ptr, jumpback.size); 
@@ -274,6 +255,7 @@ void* __hipRegisterFatBinary(const void* data)
                                 std::free(savev2.ptr);
                                 std::free(saves0.ptr);
                                 std::free(saves1.ptr);
+                                std::free(move_addr.ptr);
 							}
 						}
 

@@ -60,7 +60,10 @@ struct Instr {
         if (cdna.size() <= 0) {
             return false;
         }
-        return cdna.find("GLOBAL") != std::string::npos || cdna.find("FLAT") != std::string::npos;
+        return cdna.find("FLAT") != std::string::npos;
+    }
+    bool isGlobal() {
+        return cdna.find("GLOBAL") != std::string::npos;
     }
     bool isBranch();
 

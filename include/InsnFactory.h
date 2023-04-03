@@ -239,14 +239,14 @@ class InsnFactory {
 			uint32_t cmd = 0x7e000000;
 			uint32_t op = 1;
 			char * cmd_ptr = (char *   ) malloc(sizeof(char) * 4 );
-			cmd = ( cmd | (vdst << 17) | ( op << 9)  | src);
+			cmd = ( cmd | (vdst << 17) | ( op << 9)  | (src | 0x100));
 			memcpy( cmd_ptr ,&cmd,  4 );
 			insn_pool.push_back(cmd_ptr);
 			return MyInsn(cmd_ptr,4,std::string("v_mov_b32 "));
 		}
 		static MyInsn create_v_mov_b32_const(  uint32_t vdst, uint32_t src  , vector<char *> & insn_pool ){
 			uint32_t cmd = 0x7e000000;
-			uint32_t op = 1;
+			uint32_t op = 2;
 			char * cmd_ptr = (char *   ) malloc(sizeof(char) * 8 );
 			cmd = ( cmd | (vdst << 17) | ( op << 9)  | 255);
 			memcpy( cmd_ptr ,&cmd,  4 );
@@ -726,7 +726,7 @@ class InsnFactory {
             uint32_t cmd_low = 0x0;
             std::memcpy(&cmd_low, instr.data(), 4);
 
-            return (cmd_low && 0xFF);
+            return (cmd_low & 0x00FF);
         }
 		static MyInsn create_global_atomic_add( uint32_t s_data_pair, uint32_t s_base_pair  ,  uint32_t offset,vector<char *> & insn_pool ){
 			uint32_t cmd_low = 0xde000000;
@@ -895,12 +895,12 @@ class InsnFactory {
             char* cmd_ptr = (char * ) malloc(sizeof(char) * 8);
             cmd_low = (cmd_low | (op << 16) | vdst );
 
-            cmd_high = ( cmd_high | src1 << 9 | src0);
+            cmd_high = ( cmd_high | (src1 | 0x80) << 9 | src0);
             memcpy (cmd_ptr, &cmd_low, 4 );
             memcpy( cmd_ptr + 4, &cmd_high, 4);
 
             insn_pool.push_back(cmd_ptr);
-            return MyInsn(cmd_ptr, 8 std::string("v_writelane "));
+            return MyInsn(cmd_ptr, 8, std::string("v_writelane "));
         }
 };
 
