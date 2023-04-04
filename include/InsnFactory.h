@@ -881,7 +881,7 @@ class InsnFactory {
 			char * cmd_ptr = (char *   ) malloc(sizeof(char) * 8 );
 			cmd_low = (cmd_low | (op<< 16 )  | vdst );
 
-			cmd_high = ( cmd_high | src1 << 9 | src0);
+			cmd_high = ( cmd_high | (src1 | 0x80) << 9 | (src0 | 0x100));
 			memcpy( cmd_ptr ,&cmd_low,  4 );
 			memcpy( cmd_ptr +4 ,&cmd_high,  4 );
 			insn_pool.push_back(cmd_ptr);

@@ -1,4 +1,6 @@
-HIPTracer is a library and a CLI utility for recording and playing back sequences of GPU API calls.
+HIPTracer is a library and a CLI utility for recording and playing back sequences of GPU API calls. Binary
+instrumentation can also be added during capture, creating recordings of data besides API calls (such as memory
+or instruction traces).
 This can be used to create a capture or trace that can be stored on disk for later playback, without access to
 the original executable. You execute your program with libhiptracer.so in the `LD_PRELOAD` environment variable,
 and a capture is created with minimal intrusion into the captured program. We include a command line utility that
@@ -19,13 +21,14 @@ The capture library, replay tool, and CLI utility will all be built after this p
 # Running
 To create a capture, use the CLI utility or set environment variables yourself before running your GPU program.
 
-## CLI Usage
+## Usage
+### Capture
 The CLI utility handles setting environment variables for you. Make sure to use the `--` or "double-dash" when
 your program has its own arguments separate from hiptracer.
 ```
-./hiptracer [-o tracer-default.db] [-l ./libhiptracer.so] -- <your gpu executable and args>
+./hiptracer [-t capture][-o tracer-default.db] [-l ./libhiptracer.so] -- <your gpu executable and args>
 ```
-Creates a capture `tracer-default.db` in the current working directory. For example,
+The default tool creates a capture `tracer-default.db` in the current working directory. For example,
 
 ```
 $ ./hiptracer ../examples/vectorAdd/vectoradd_hip.exe
@@ -42,6 +45,9 @@ CAPTURE COMPLETE
 
 A progressbar that indicates capture progress is displayed after the program exits. Writing captures should
 have no impact on the actual program by deferring most writing till after it exits.
+
+### Memtrace
+(WIP) Call the capture program with the `-t memtrace` option. 
 
 ## Environment
 You can set the environment variables yourself as below:

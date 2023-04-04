@@ -71,6 +71,8 @@ struct Instr {
 
 };
 
+__global__ void zero_atomics(int*);
+
 enum HIP_EVENT {
     EVENT_UNDEFINED = 0,
     EVENT_DEVICE,
@@ -164,10 +166,7 @@ struct hiptracer_state {
         events_available.wait(lock);
     }
     
-    void init_capture() {
-        std::filesystem::create_directory("./hostdata");
-        std::filesystem::create_directory("./code");
-    
+    void init_capture() { 
         if (sqlite3_open(db_path.c_str(), &event_db) != SQLITE_OK) {
             std::printf("Unable to open event database: %s\n", sqlite3_errmsg(event_db));
             sqlite3_close(event_db);
@@ -246,6 +245,9 @@ struct hiptracer_state {
         char* tool_str = std::getenv("HIPTRACER_TOOL");
         if (tool_str != NULL) {
             //std::printf("TOOL %s\n", tool_str);
+
+            std::filesystem::create_directory("./hostdata");
+            std::filesystem::create_directory("./code");
 
             if (std::string(tool_str) == "capture") {
                 tool = TOOL_CAPTURE;

@@ -4,6 +4,9 @@
 #include <condition_variable>
 #include <string>
 
+#define __HIP_PLATFORM_AMD__
+#include <hip/hip_runtime.h>
+
 // DynInst
 #include "InstructionDecoder.h"
 #include "InsnFactory.h"
@@ -16,8 +19,23 @@
 #include "atomic_queue/atomic_queue.h"
 #include "flat_hash_map.hpp"
 
+#include "AMDHSAKernelDescriptor.h"
+
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
+
+void readToKd(const uint8_t *rawBytes, size_t rawBytesLength,
+                                size_t fromIndex, size_t numBytes,
+                                uint8_t *data) {
+  assert(rawBytes && "rawBytes must be non-null");
+  assert(data && "data must be non-null");
+  assert(fromIndex + numBytes <= rawBytesLength);
+
+  for (size_t i = 0; i < numBytes; ++i) {
+    size_t idx = fromIndex + i;
+    data[i] = rawBytes[idx];
+  }
+}
 
 std::vector<Instr> get_instructions(std::string text) {
     std::vector<Instr> instructions;
@@ -59,7 +77,6 @@ hipError_t  (*hipLaunchKernel_fptr)(const void*, dim3, dim3, void**, size_t, hip
 const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
 #define CLANG_OFFLOAD_BUNDLER_MAGIC "__CLANG_OFFLOAD_BUNDLE__"
 #define AMDGCN_AMDHSA_TRIPLE "hip-amdgcn-amd-amdhsa"
-
 
 void* __hipRegisterFatBinary(const void* data)
 {
@@ -151,12 +168,194 @@ void* __hipRegisterFatBinary(const void* data)
 			ELFIO::elfio reader;
 			reader.load(is);
 
+            hipError_t  (*hipMalloc_fptr)(void**, size_t) = NULL;
+            if (hipMalloc_fptr == NULL) {
+                hipMalloc_fptr = (hipError_t (*) (void**, size_t)) dlsym(get_rocm_lib(), "hipMalloc");
+                assert(hipMalloc_fptr != NULL);
+            }
+
+            int* atomics = nullptr;
+            uint64_t* buffer = nullptr;
+            const int BUFFER_SIZE = 1200000;
+            hipMalloc_fptr((void**) &atomics, sizeof(int) * 1); // TODO: MORE ATOMICS, LESS CONTENTION
+            hipMalloc_fptr((void**) &buffer, sizeof(uint64_t) * BUFFER_SIZE);
+
+            hipError_t  (*hipMemcpy_fptr)(void*, const void*, size_t, hipMemcpyKind) = NULL;
+            
+            if (hipMemcpy_fptr == NULL) {
+                hipMemcpy_fptr = (hipError_t (*) (void*, const void*, size_t, hipMemcpyKind)) dlsym(get_rocm_lib(), "hipMemcpy");
+            }
+            int zero_atomics = 0;
+            hipError_t memcpy_result = hipMemcpy_fptr(atomics, &zero_atomics, sizeof(int), hipMemcpyHostToDevice);
+            assert(memcpy_result == hipSuccess);
+
+            assert(atomics != NULL);
+            assert(buffer != NULL);
+            std::printf("ATOMICS %p BUFFER %p\n", atomics, buffer);
+
 			for(int i = 0; i < reader.sections.size(); i++) {
 				ELFIO::section* psec = reader.sections[i];
 
 				if (psec) {
 					std::string sec_name = psec->get_name();
-					if (sec_name == std::string(".text")) {
+                    std::printf("SECTION NAME %s\n", sec_name.c_str());
+
+                    if (psec->get_type() == ELFIO::SHT_NOTE) {
+                        ELFIO::note_section_accessor notes(reader, psec);
+                        for (int j = 0; j < notes.get_notes_num(); j++) {
+                            ELFIO::Elf_Word type;
+                            std::string name;
+                            void* desc;
+                            ELFIO::Elf_Word descSize;
+                            notes.get_note(i, type, name, desc, descSize);
+
+                            const char* r = (const char*) desc;
+                            uint32_t map_size = mp_decode_map(&r);
+                            for (int k = 0; k < map_size; k++) {
+                                uint32_t key_len;
+                                const char* key = mp_decode_str(&r, &key_len);
+
+                                if (std::string(key, key_len) == "amdhsa.kernels") {
+                                    uint32_t num_kernels = mp_decode_array(&r);
+
+                                    for (int ii = 0; ii < num_kernels; ii++) {
+                                        uint32_t kern_map_size = mp_decode_map(&r);
+
+                                        for (int jj = 0; jj < kern_map_size; jj++) {
+                                            uint32_t kkey_len;
+                                            const char* kern_key = mp_decode_str(&r, &kkey_len);
+
+                                            if (std::string(kern_key, kkey_len) == ".vgpr_count") {
+                                                char* orig = (char*) r;
+                                                uint32_t vgpr_count = mp_decode_uint(&r);
+                                                std::printf("VGPR_COUNT %d SIZE %d NEW SIZE %d\n", vgpr_count, mp_sizeof_uint(vgpr_count), mp_sizeof_uint(vgpr_count + 4));
+                                                std::printf("MP_UINT %d\n", MP_UINT); 
+                                                vgpr_count += 6;
+                                                mp_encode_uint(orig, vgpr_count);
+                                            }
+                                            else {
+                                                mp_next(&r);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    mp_next(&r);
+                                }
+                            }
+                            //psec->set_data((char*)desc, descSize);
+                            //notes.set_note(i, type, name, desc, descSize);
+                        }
+                    } else if ( psec->get_type() == ELFIO::SHT_SYMTAB) {
+                        std::printf("SHT_SYMTAB FOUND\n");
+
+                        const ELFIO:: symbol_section_accessor symbols(reader, psec);
+                        for (int j = 0; j < symbols.get_symbols_num(); ++j) {
+                            std::string name;
+                            ELFIO::Elf64_Addr value;
+                            ELFIO::Elf_Xword size;
+                            unsigned char bind;
+                            unsigned char type;
+                            ELFIO::Elf_Half section_index;
+                            unsigned char other;
+
+                            symbols.get_symbol(j, name, value, size, bind, type, section_index, other);
+                            std::printf("SYMBOL J %d is %s\n", j, name.c_str());
+
+                            if (name.find(".kd") != std::string::npos) {
+                                // Edit kernel descriptor
+                                ELFIO::section* kd_region = reader.sections[section_index];
+                                std::printf("kd_region name %s size %d\n", kd_region->get_name().c_str(), kd_region->get_size());
+                                const size_t kd_offset = value - kd_region->get_address();
+
+                                std::printf("kd offset %d\n", kd_offset);
+                                llvm::amdhsa::kernel_descriptor_t kdRepr;
+
+                                uint8_t *kdPtr = (uint8_t *)&kdRepr;
+                                uint8_t *kdBytes = (uint8_t*) (kd_region->get_data() + kd_offset);
+
+                                const size_t kdSize = 64;
+                                size_t found_idx = 0;
+                                size_t idx = 0;
+                                while (idx < kdSize) {
+                                    switch (idx) {
+                                    case llvm::amdhsa::GROUP_SEGMENT_FIXED_SIZE_OFFSET:
+                                      readToKd(kdBytes, kdSize, idx, sizeof(uint32_t), kdPtr + idx);
+                                      idx += sizeof(uint32_t);
+                                      break;
+                                
+                                    case llvm::amdhsa::PRIVATE_SEGMENT_FIXED_SIZE_OFFSET:
+                                      readToKd(kdBytes, kdSize, idx, sizeof(uint32_t), kdPtr + idx);
+                                      idx += sizeof(uint32_t);
+                                      break;
+                                
+                                    case llvm::amdhsa::KERNARG_SIZE_OFFSET:
+                                      readToKd(kdBytes, kdSize, idx, sizeof(uint32_t), kdPtr + idx);
+                                      idx += sizeof(uint32_t);
+                                      break;
+                                
+                                    case llvm::amdhsa::RESERVED0_OFFSET:
+                                      readToKd(kdBytes, kdSize, idx, 4 * sizeof(int8_t), kdPtr + idx);
+                                      idx += 4 * sizeof(uint8_t);
+                                      break;
+                                
+                                    case llvm::amdhsa::KERNEL_CODE_ENTRY_BYTE_OFFSET_OFFSET:
+                                      readToKd(kdBytes, kdSize, idx, sizeof(uint64_t), kdPtr + idx);
+                                      idx += sizeof(uint64_t);
+                                      break;
+                                
+                                    case llvm::amdhsa::RESERVED1_OFFSET:
+                                      readToKd(kdBytes, kdSize, idx, 20 * sizeof(uint8_t), kdPtr + idx);
+                                      idx += 20 * sizeof(uint8_t);
+                                      break;
+                                
+                                    case llvm::amdhsa::COMPUTE_PGM_RSRC3_OFFSET:
+                                      readToKd(kdBytes, kdSize, idx, sizeof(uint32_t), kdPtr + idx);
+                                      idx += sizeof(uint32_t);
+                                      break;
+                                
+                                    case llvm::amdhsa::COMPUTE_PGM_RSRC1_OFFSET:
+                                      readToKd(kdBytes, kdSize, idx, sizeof(uint32_t), kdPtr + idx);
+                                      idx += sizeof(uint32_t);
+                                      break;
+                                
+                                    case llvm::amdhsa::COMPUTE_PGM_RSRC2_OFFSET:
+                                      found_idx = idx;
+                                      readToKd(kdBytes, kdSize, idx, sizeof(uint32_t), kdPtr + idx);
+                                      idx += sizeof(uint32_t);
+                                      break;
+                                
+                                    case llvm::amdhsa::KERNEL_CODE_PROPERTIES_OFFSET:
+                                      readToKd(kdBytes, kdSize, idx, sizeof(uint16_t), kdPtr + idx);
+                                      idx += sizeof(uint16_t);
+                                      break;
+                                
+                                    case llvm::amdhsa::RESERVED2_OFFSET:
+                                      readToKd(kdBytes, kdSize, idx, 6 * sizeof(uint8_t), kdPtr + idx);
+                                      idx += 6 * sizeof(uint8_t);
+                                      break;
+                                    }
+                                }
+
+                            #define GET_VALUE(MASK) ((fourByteBuffer & MASK) >> (MASK##_SHIFT))
+                            #define SET_VALUE(MASK) (fourByteBuffer | ((8) << (MASK##_SHIFT)))
+                            #define CLEAR_BITS(MASK) (fourByteBuffer & (~(MASK)))
+                            #define CHECK_WIDTH(MASK) ((vall) >> (MASK##_WIDTH) == 0)
+
+                                uint32_t fourByteBuffer = kdRepr.compute_pgm_rsrc2;
+                                std::printf("BEFORE USER SGPR %d\n", GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC2_USER_SGPR_COUNT));
+                                fourByteBuffer = CLEAR_BITS(llvm::amdhsa::COMPUTE_PGM_RSRC2_USER_SGPR_COUNT);
+                                fourByteBuffer = SET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC2_USER_SGPR_COUNT);
+                                std::printf("AFTER USER SGPR %d\n", GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC2_USER_SGPR_COUNT));
+                                std::printf("FOUR BYTE %d\n", fourByteBuffer);
+
+                                std::string data{kd_region->get_data(), kd_region->get_size()}; 
+                                std::memcpy(data.data() + kd_offset + found_idx, &fourByteBuffer, 4); // Copy kernel descriptor back
+
+                                kd_region->set_data(data.data(), data.size());
+                            }
+                        }
+                    }
+					else if (sec_name == std::string(".text")) {
                         std::printf("Instructions length originally %d bytes\n", psec->get_size());
 						std::string text{static_cast<const char*>(psec->get_data()), psec->get_size()};
 						std::vector<Instr> instructions = get_instructions(text); 
@@ -169,27 +368,29 @@ void* __hipRegisterFatBinary(const void* data)
 
                             //std::printf("Instr %d: %s\n", i, instr.getCdna());
 							if ((instr.isLoad() || instr.isStore()) && instr.isGlobal()) { 
-
                                 std::printf("IS LOAD OR STORE\n");
 								uint32_t offset = instr.getOffset();	
 
                                 std::vector<char*> instr_pool;
                                 auto jumpto = InsnFactory::create_s_branch(offset, base + psec->get_size(), NULL, instr_pool);
-                                auto jumpback = InsnFactory::create_s_branch(base + psec->get_size(), offset, NULL, instr_pool);
 
                                 assert(jumpto.size <= instr.size);
  
+                                // JUMP TO
                                 std::memcpy(&text[offset], jumpto.ptr, jumpto.size);
+                                uint32_t dummy = 0xBF800000;
+                                std::memcpy(&text[offset + jumpto.size], &dummy, 4);
 
-                                uint32_t next_free_vreg = 65; // TODO: Compute next register from kernel descriptor
+                                uint32_t next_free_vreg = 8; // TODO: Compute next register from kernel descriptor
 
                                 auto savev0 = InsnFactory::create_v_mov_b32(next_free_vreg, 0, instr_pool);
                                 auto savev1 = InsnFactory::create_v_mov_b32(next_free_vreg + 1, 1, instr_pool);
                                 auto savev2 = InsnFactory::create_v_mov_b32(next_free_vreg + 2, 2, instr_pool);
-                                auto saves0 = InsnFactory::create_v_writelane_b32(next_free_vreg + 3, 0, 0, instr_pool);
-                                auto saves1 = InsnFactory::create_v_writelane_b32(next_free_vreg + 4, 0, 1, instr_pool);
+                                auto savev3 = InsnFactory::create_v_mov_b32(next_free_vreg + 3, 3, instr_pool);
+                                auto saves0 = InsnFactory::create_v_writelane_b32(next_free_vreg + 4, 0, 0, instr_pool);
+                                auto saves1 = InsnFactory::create_v_writelane_b32(next_free_vreg + 5, 0, 1, instr_pool);
 
-                                uint32_t v_registers_moved = 3;
+                                uint32_t v_registers_moved = 4;
 
                                 // MEMTRACE
                                 // v_mov_b32_e32 vXX, v0
@@ -213,7 +414,7 @@ void* __hipRegisterFatBinary(const void* data)
         						// v_mov_b32_e32 v2, 0xcccccccc                               // 000000001044: 7E0402FF CCCCCCCC
         						// v_add_co_u32_e32 v0, vcc, 0xdeadb000, v0                   // 00000000104C: 320000FF DEADB000
         						// v_addc_co_u32_e32 v1, vcc, 0, v1, vcc                      // 000000001054: 38020280
-        						// flat_store_dword v[0:1], v2 offset:3823                    // 000000001058: DC700EEF 00000200
+        						// flat_store_dword v[0:1], v2 offset:3823                    // 000000001058: DC700EEF 00000200 
         						// s_endpgm                                                   // 000000001060: BF810000
                                 // v_mov_b32_e32 v0, vXX
                                 // v_mov_b32_e32 v1, vYY
@@ -222,30 +423,59 @@ void* __hipRegisterFatBinary(const void* data)
 
                                 uint32_t address_register = InsnFactory::get_addr_from_flat(instr.data);
                                 if (address_register < v_registers_moved - 1) {
-                                    std::printf("GOD %d from FLAT \n", address_register);
+                                    std::printf("GOT %d from FLAT \n", address_register);
                                     address_register += next_free_vreg;
                                 }
-                                uint32_t mov_addr = 0x7E040200 | address_register;
                                 std::printf("FOUND ADDRESS REGISTER %d\n", address_register);
 
-                                uint32_t atomic_addr_low = 0xbeefbeef;
-                                uint32_t atomic_addr_high = 0xdeaddead;
-                                //uint32_t buffer_addr_low = 
-								const uint32_t memtrace_code[] = { 0x7D940080, 0xBE80206A, 0xBF880015, 0x7E0002FF, atomic_addr_low, 0x7E0202FF, atomic_addr_high, 0x7E040281,
-                                                              0xDD090000, 0x00000200, 0xB0000400, 0xBF8C0070, 0x7D880000,  0x86FE6A7E, 0xBF88000A, 0x2202009F,
-                                                              0xD28F0000, 0x00020082};
+                                uint32_t atomic_addr_low = reinterpret_cast<uint64_t>(atomics) & (0x00000000FFFFFFFF);
+                                uint32_t atomic_addr_high = (reinterpret_cast<uint64_t>(atomics) & (0xFFFFFFFF00000000)) >> 32;
+                                uint32_t buffer_addr_low = reinterpret_cast<uint64_t>(buffer) & (0x00000000FFFFFFFF);
+                                uint32_t buffer_addr_high = (reinterpret_cast<uint64_t>(buffer) & (0xFFFFFFFF00000000)) >> 32;
+								const uint32_t memtrace_code_sec1[] = { 0x7D940080, 0xBE80206A, 0xBF880014, 0x7E0002FF, atomic_addr_high, 0x7E0202FF, atomic_addr_low, 0x7E040281,
+                                                              0xBF800000, 0xBF800000, 0x7E0602FF, buffer_addr_high };
+                                                              //0xDD090000, 0x00000200, 0x7E0602FF, buffer_addr_high };
                                 auto move_addr_low = InsnFactory::create_v_mov_b32(2, address_register, instr_pool);
+                                const uint32_t memtrace_code_sec2[] = { 0xBF8C0070, 0x2202009F, 0xD28F0000, 0x00020083, 0x320000FF, buffer_addr_low, 0x38020303 };
+                                auto move_addr_high = InsnFactory::create_v_mov_b32(3, address_register + 1, instr_pool);
+                                //const uint32_t memtrace_code_sec3[] = { 0xDC740000, 0x00000200 };
+                                const uint32_t memtrace_code_sec3[] = { 0xBF800000, 0xBF800000 };
 
-                                psec->append_data((char*) savev0.ptr, savev0.size);
-                                psec->append_data((char*) savev1.ptr, savev1.size);
-                                psec->append_data((char*) savev2.ptr, savev2.size);
-                                psec->append_data((char*) saves0.ptr, saves0.size);
-                                psec->append_data((char*) saves1.ptr, saves1.size);
+                                // SAVE DATA
+                                //psec->append_data((char*) savev0.ptr, savev0.size);
+                                //psec->append_data((char*) savev1.ptr, savev1.size);
+                                //psec->append_data((char*) savev2.ptr, savev2.size);
+                                //psec->append_data((char*) savev3.ptr, savev3.size);
+                                //psec->append_data((char*) saves0.ptr, saves0.size);
+                                //psec->append_data((char*) saves1.ptr, saves1.size);
 
-                                psec->append_data((char*) memtrace_code, sizeof(memtrace_code));
-                                psec->append_data((char*) move_addr_low.ptr, move_addr_low.size);
+                                //// Perform MEMTRACE
+                                //psec->append_data((char*) memtrace_code_sec1, sizeof(memtrace_code_sec1));
+                                //psec->append_data((char*) move_addr_low.ptr, move_addr_low.size);
+                                //psec->append_data((char*) memtrace_code_sec2, sizeof(memtrace_code_sec2));
+                                //psec->append_data((char*) move_addr_high.ptr, move_addr_high.size);
+                                //psec->append_data((char*) memtrace_code_sec3, sizeof(memtrace_code_sec3));
 
+                                auto loadv0 = InsnFactory::create_v_mov_b32(0, next_free_vreg, instr_pool);
+                                auto loadv1 = InsnFactory::create_v_mov_b32(1, next_free_vreg + 1, instr_pool);
+                                auto loadv2 = InsnFactory::create_v_mov_b32(2, next_free_vreg + 2, instr_pool);
+                                auto loadv3 = InsnFactory::create_v_mov_b32(3, next_free_vreg + 3, instr_pool);
+                                auto loads0 = InsnFactory::create_v_readlane_b32(0, 0, next_free_vreg + 4, instr_pool);
+                                auto loads1 = InsnFactory::create_v_readlane_b32(1, 0, next_free_vreg + 5, instr_pool);
+
+                                // LOAD DATA
+                                //psec->append_data((char*) loadv0.ptr, loadv0.size);
+                                //psec->append_data((char*) loadv1.ptr, loadv1.size);
+                                //psec->append_data((char*) loadv2.ptr, loadv2.size);
+                                //psec->append_data((char*) loadv3.ptr, loadv3.size);
+                                //psec->append_data((char*) loads0.ptr, loads0.size);
+                                //psec->append_data((char*) loads1.ptr, loads1.size);
+
+                                // Execute ORIGINAL INSTRUCTION
                                 psec->append_data(instr.data.data(), instr.data.size());
+
+                                // JUMP BACK
+                                auto jumpback = InsnFactory::create_s_branch(base + psec->get_size(), offset + 4, NULL, instr_pool);
                                 psec->append_data((char*) jumpback.ptr, jumpback.size); 
 
                                 std::free(jumpto.ptr);
@@ -255,7 +485,12 @@ void* __hipRegisterFatBinary(const void* data)
                                 std::free(savev2.ptr);
                                 std::free(saves0.ptr);
                                 std::free(saves1.ptr);
-                                std::free(move_addr.ptr);
+                                std::free(loadv0.ptr);
+                                std::free(loadv1.ptr);
+                                std::free(loadv2.ptr);
+                                std::free(loads0.ptr);
+                                std::free(loads1.ptr);
+                                std::free(move_addr_low.ptr);
 							}
 						}
 
@@ -268,9 +503,9 @@ void* __hipRegisterFatBinary(const void* data)
                         psec->set_data(&newtext[0], newtext.size());
 
                         std::printf("Instructions length now %d bytes \n", psec->get_size());
-            		    reader.save(filename.c_str()); 
-                        get_filenames().push_back(filename);
 					}
+            		reader.save(filename.c_str()); 
+                    get_filenames().push_back(filename);
 				}
 			}
         }
