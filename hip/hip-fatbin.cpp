@@ -433,28 +433,28 @@ void* __hipRegisterFatBinary(const void* data)
                                 uint32_t buffer_addr_low = reinterpret_cast<uint64_t>(buffer) & (0x00000000FFFFFFFF);
                                 uint32_t buffer_addr_high = (reinterpret_cast<uint64_t>(buffer) & (0xFFFFFFFF00000000)) >> 32;
 								const uint32_t memtrace_code_sec1[] = { 0x7D940080, 0xBE80206A, 0xBF880014, 0x7E0002FF, atomic_addr_high, 0x7E0202FF, atomic_addr_low, 0x7E040281,
-                                                              0xBF800000, 0xBF800000, 0x7E0602FF, buffer_addr_high };
-                                                              //0xDD090000, 0x00000200, 0x7E0602FF, buffer_addr_high };
+                                                              //0xBF800000, 0xBF800000, 0x7E0602FF, buffer_addr_high };
+                                                              0xDD090000, 0x00000200, 0x7E0602FF, buffer_addr_high };
                                 auto move_addr_low = InsnFactory::create_v_mov_b32(2, address_register, instr_pool);
                                 const uint32_t memtrace_code_sec2[] = { 0xBF8C0070, 0x2202009F, 0xD28F0000, 0x00020083, 0x320000FF, buffer_addr_low, 0x38020303 };
                                 auto move_addr_high = InsnFactory::create_v_mov_b32(3, address_register + 1, instr_pool);
-                                //const uint32_t memtrace_code_sec3[] = { 0xDC740000, 0x00000200 };
-                                const uint32_t memtrace_code_sec3[] = { 0xBF800000, 0xBF800000 };
+                                const uint32_t memtrace_code_sec3[] = { 0xDC740000, 0x00000200 };
+                                //const uint32_t memtrace_code_sec3[] = { 0xBF800000, 0xBF800000 };
 
                                 // SAVE DATA
-                                //psec->append_data((char*) savev0.ptr, savev0.size);
-                                //psec->append_data((char*) savev1.ptr, savev1.size);
-                                //psec->append_data((char*) savev2.ptr, savev2.size);
-                                //psec->append_data((char*) savev3.ptr, savev3.size);
-                                //psec->append_data((char*) saves0.ptr, saves0.size);
-                                //psec->append_data((char*) saves1.ptr, saves1.size);
+                                psec->append_data((char*) savev0.ptr, savev0.size);
+                                psec->append_data((char*) savev1.ptr, savev1.size);
+                                psec->append_data((char*) savev2.ptr, savev2.size);
+                                psec->append_data((char*) savev3.ptr, savev3.size);
+                                psec->append_data((char*) saves0.ptr, saves0.size);
+                                psec->append_data((char*) saves1.ptr, saves1.size);
 
                                 //// Perform MEMTRACE
-                                //psec->append_data((char*) memtrace_code_sec1, sizeof(memtrace_code_sec1));
-                                //psec->append_data((char*) move_addr_low.ptr, move_addr_low.size);
-                                //psec->append_data((char*) memtrace_code_sec2, sizeof(memtrace_code_sec2));
-                                //psec->append_data((char*) move_addr_high.ptr, move_addr_high.size);
-                                //psec->append_data((char*) memtrace_code_sec3, sizeof(memtrace_code_sec3));
+                                psec->append_data((char*) memtrace_code_sec1, sizeof(memtrace_code_sec1));
+                                psec->append_data((char*) move_addr_low.ptr, move_addr_low.size);
+                                psec->append_data((char*) memtrace_code_sec2, sizeof(memtrace_code_sec2));
+                                psec->append_data((char*) move_addr_high.ptr, move_addr_high.size);
+                                psec->append_data((char*) memtrace_code_sec3, sizeof(memtrace_code_sec3));
 
                                 auto loadv0 = InsnFactory::create_v_mov_b32(0, next_free_vreg, instr_pool);
                                 auto loadv1 = InsnFactory::create_v_mov_b32(1, next_free_vreg + 1, instr_pool);
@@ -464,12 +464,12 @@ void* __hipRegisterFatBinary(const void* data)
                                 auto loads1 = InsnFactory::create_v_readlane_b32(1, 0, next_free_vreg + 5, instr_pool);
 
                                 // LOAD DATA
-                                //psec->append_data((char*) loadv0.ptr, loadv0.size);
-                                //psec->append_data((char*) loadv1.ptr, loadv1.size);
-                                //psec->append_data((char*) loadv2.ptr, loadv2.size);
-                                //psec->append_data((char*) loadv3.ptr, loadv3.size);
-                                //psec->append_data((char*) loads0.ptr, loads0.size);
-                                //psec->append_data((char*) loads1.ptr, loads1.size);
+                                psec->append_data((char*) loadv0.ptr, loadv0.size);
+                                psec->append_data((char*) loadv1.ptr, loadv1.size);
+                                psec->append_data((char*) loadv2.ptr, loadv2.size);
+                                psec->append_data((char*) loadv3.ptr, loadv3.size);
+                                psec->append_data((char*) loads0.ptr, loads0.size);
+                                psec->append_data((char*) loads1.ptr, loads1.size);
 
                                 // Execute ORIGINAL INSTRUCTION
                                 psec->append_data(instr.data.data(), instr.data.size());
