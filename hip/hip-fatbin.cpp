@@ -80,6 +80,7 @@ const unsigned __hipFatMAGIC2 = 0x48495046; // "HIPF"
 
 void* __hipRegisterFatBinary(const void* data)
 {
+    std::printf("HELLO??\n");
     if (hipRegisterFatBinary_fptr == NULL) {
         hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(get_rocm_lib(), "__hipRegisterFatBinary");
     }
@@ -200,52 +201,7 @@ void* __hipRegisterFatBinary(const void* data)
 					std::string sec_name = psec->get_name();
                     std::printf("SECTION NAME %s\n", sec_name.c_str());
 
-                    if (psec->get_type() == ELFIO::SHT_NOTE) {
-                        ELFIO::note_section_accessor notes(reader, psec);
-                        for (int j = 0; j < notes.get_notes_num(); j++) {
-                            ELFIO::Elf_Word type;
-                            std::string name;
-                            void* desc;
-                            ELFIO::Elf_Word descSize;
-                            notes.get_note(i, type, name, desc, descSize);
-
-                            const char* r = (const char*) desc;
-                            uint32_t map_size = mp_decode_map(&r);
-                            for (int k = 0; k < map_size; k++) {
-                                uint32_t key_len;
-                                const char* key = mp_decode_str(&r, &key_len);
-
-                                if (std::string(key, key_len) == "amdhsa.kernels") {
-                                    uint32_t num_kernels = mp_decode_array(&r);
-
-                                    for (int ii = 0; ii < num_kernels; ii++) {
-                                        uint32_t kern_map_size = mp_decode_map(&r);
-
-                                        for (int jj = 0; jj < kern_map_size; jj++) {
-                                            uint32_t kkey_len;
-                                            const char* kern_key = mp_decode_str(&r, &kkey_len);
-
-                                            if (std::string(kern_key, kkey_len) == ".vgpr_count") {
-                                                char* orig = (char*) r;
-                                                uint32_t vgpr_count = mp_decode_uint(&r);
-                                                std::printf("VGPR_COUNT %d SIZE %d NEW SIZE %d\n", vgpr_count, mp_sizeof_uint(vgpr_count), mp_sizeof_uint(vgpr_count + 4));
-                                                std::printf("MP_UINT %d\n", MP_UINT); 
-                                                vgpr_count += 6;
-                                                mp_encode_uint(orig, vgpr_count);
-                                            }
-                                            else {
-                                                mp_next(&r);
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    mp_next(&r);
-                                }
-                            }
-                            //psec->set_data((char*)desc, descSize);
-                            //notes.set_note(i, type, name, desc, descSize);
-                        }
-                    } else if ( psec->get_type() == ELFIO::SHT_SYMTAB) {
+                    if ( psec->get_type() == ELFIO::SHT_SYMTAB) {
                         std::printf("SHT_SYMTAB FOUND\n");
 
                         const ELFIO:: symbol_section_accessor symbols(reader, psec);
@@ -314,12 +270,12 @@ void* __hipRegisterFatBinary(const void* data)
                                       break;
                                 
                                     case llvm::amdhsa::COMPUTE_PGM_RSRC1_OFFSET:
+                                      found_idx = idx;
                                       readToKd(kdBytes, kdSize, idx, sizeof(uint32_t), kdPtr + idx);
                                       idx += sizeof(uint32_t);
                                       break;
                                 
                                     case llvm::amdhsa::COMPUTE_PGM_RSRC2_OFFSET:
-                                      found_idx = idx;
                                       readToKd(kdBytes, kdSize, idx, sizeof(uint32_t), kdPtr + idx);
                                       idx += sizeof(uint32_t);
                                       break;
@@ -337,16 +293,19 @@ void* __hipRegisterFatBinary(const void* data)
                                 }
 
                             #define GET_VALUE(MASK) ((fourByteBuffer & MASK) >> (MASK##_SHIFT))
-                            #define SET_VALUE(MASK) (fourByteBuffer | ((8) << (MASK##_SHIFT)))
+                            #define SET_VALUE(MASK) (fourByteBuffer | ((14) << (MASK##_SHIFT)))
                             #define CLEAR_BITS(MASK) (fourByteBuffer & (~(MASK)))
                             #define CHECK_WIDTH(MASK) ((vall) >> (MASK##_WIDTH) == 0)
 
-                                uint32_t fourByteBuffer = kdRepr.compute_pgm_rsrc2;
-                                std::printf("BEFORE USER SGPR %d\n", GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC2_USER_SGPR_COUNT));
-                                fourByteBuffer = CLEAR_BITS(llvm::amdhsa::COMPUTE_PGM_RSRC2_USER_SGPR_COUNT);
-                                fourByteBuffer = SET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC2_USER_SGPR_COUNT);
-                                std::printf("AFTER USER SGPR %d\n", GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC2_USER_SGPR_COUNT));
-                                std::printf("FOUR BYTE %d\n", fourByteBuffer);
+                                uint32_t fourByteBuffer = kdRepr.compute_pgm_rsrc1;
+                                std::printf("BEFORE GRANULATED %d\n", GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT));
+                                fourByteBuffer = CLEAR_BITS(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT);
+                                fourByteBuffer = (fourByteBuffer | ((3) << (llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT_SHIFT)));
+
+                                //std::printf("AFTER GRANULATED %d\n", GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT));
+                                //fourByteBuffer = CLEAR_BITS(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WAVEFRONT_SGPR_COUNT);
+                                //fourByteBuffer = (fourByteBuffer | ((12) << (llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WAVEFRONT_SGPR_COUNT_SHIFT)));
+                                //std::printf("FOUR BYTE %d\n", fourByteBuffer);
 
                                 std::string data{kd_region->get_data(), kd_region->get_size()}; 
                                 std::memcpy(data.data() + kd_offset + found_idx, &fourByteBuffer, 4); // Copy kernel descriptor back
@@ -450,11 +409,11 @@ void* __hipRegisterFatBinary(const void* data)
                                 psec->append_data((char*) saves1.ptr, saves1.size);
 
                                 //// Perform MEMTRACE
-                                psec->append_data((char*) memtrace_code_sec1, sizeof(memtrace_code_sec1));
-                                psec->append_data((char*) move_addr_low.ptr, move_addr_low.size);
-                                psec->append_data((char*) memtrace_code_sec2, sizeof(memtrace_code_sec2));
-                                psec->append_data((char*) move_addr_high.ptr, move_addr_high.size);
-                                psec->append_data((char*) memtrace_code_sec3, sizeof(memtrace_code_sec3));
+                                //psec->append_data((char*) memtrace_code_sec1, sizeof(memtrace_code_sec1));
+                                //psec->append_data((char*) move_addr_low.ptr, move_addr_low.size);
+                                //psec->append_data((char*) memtrace_code_sec2, sizeof(memtrace_code_sec2));
+                                //psec->append_data((char*) move_addr_high.ptr, move_addr_high.size);
+                                //psec->append_data((char*) memtrace_code_sec3, sizeof(memtrace_code_sec3));
 
                                 auto loadv0 = InsnFactory::create_v_mov_b32(0, next_free_vreg, instr_pool);
                                 auto loadv1 = InsnFactory::create_v_mov_b32(1, next_free_vreg + 1, instr_pool);

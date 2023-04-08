@@ -1,18 +1,10 @@
 cmake_minimum_required(VERSION 3.21)
-include(FetchContent)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-list(APPEND CMAKE_PREFIX_PATH /opt/rocm/lib/ /opt/rocm/hip /opt/rocm)
-set(AMDDeviceLibs_DIR /opt/rocm/lib/cmake/AMDDeviceLibs)
-
-set(ElfUtils_ROOT_DIR /home/carozhon/wario/hiptracer/lib/elfutils/build/ CACHE FILEPATH "Elfutils location")
-
 project(hiptracer LANGUAGES C CXX HIP)
 set(CMAKE_CXX_STANDARD 17)
-set(elfutils_SOURCE_DIR ${CMAKE_SOURCE_DIR}/lib/elfutils)
 
-message("ELFUTILS" ${ElfUtils_ROOT_DIR})
 find_package(Dyninst)
 
 add_library(hipcapture SHARED hip/hip.cpp hip/hip-fatbin.cpp
@@ -24,7 +16,6 @@ target_include_directories(hipcapture PUBLIC "include")
 target_include_directories(hipcapture PUBLIC "/opt/rocm/include")
 target_include_directories(hipcapture PUBLIC "/opt/rocm/llvm/include")
 target_include_directories(hipcapture PUBLIC ${DYNINST_INCLUDE_DIR})
-
 target_link_libraries(hipcapture dl zstd pthread instructionAPI)
 
 # add_library(cudacapture SHARED cuda/cuda.cpp cuda/cuda-fatbin.cpp
@@ -40,8 +31,7 @@ add_executable(replay replay/replay.cpp hip/sqlite3.c hip/xxhash.c hip/msgpuck.c
 target_include_directories(replay PUBLIC include)
 target_include_directories(replay PUBLIC "/opt/rocm/include")
 target_include_directories(replay PUBLIC "/opt/rocm/llvm/include")
-
-target_link_libraries(replay dl pthread readline)
+target_link_libraries(replay dl pthread readline /opt/rocm/lib/libamdhip64.so)
 
 add_executable(hiptracer cli.cpp)
 target_include_directories(hiptracer PUBLIC include)
