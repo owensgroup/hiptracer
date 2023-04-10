@@ -75,6 +75,13 @@ ska::flat_hash_map<uint64_t, bool>& get_handled_fatbins() {
     return get_hiptracer_state().handled_fatbins;
 }
 
+uint64_t& get_atomic_addr() {
+    return get_hiptracer_state().atomic;
+}
+uint64_t& get_buffer_addr() {
+    return get_hiptracer_state().buffer;
+}
+
 
 void pushback_event(gputrace_event event)
 {

@@ -161,10 +161,6 @@ void* __hipRegisterFatBinary(const void* data)
 
             pushback_event(event);
         } else if (get_tool() == TOOL_MEMTRACE) {
-            //std::FILE* code = std::fopen(filename.c_str(), "wb");
-            //std::fwrite(image.data(), sizeof(char), image.size(), code);
-            //std::fclose(code);
-
 			std::istringstream is(image);
 			ELFIO::elfio reader;
 			reader.load(is);
@@ -177,7 +173,7 @@ void* __hipRegisterFatBinary(const void* data)
 
             int* atomics = nullptr;
             uint64_t* buffer = nullptr;
-            const int BUFFER_SIZE = 1200000;
+            const int BUFFER_SIZE = 3000000 + 1000;
             hipMalloc_fptr((void**) &atomics, sizeof(int) * 1); // TODO: MORE ATOMICS, LESS CONTENTION
             hipMalloc_fptr((void**) &buffer, sizeof(uint64_t) * BUFFER_SIZE);
 
@@ -190,9 +186,19 @@ void* __hipRegisterFatBinary(const void* data)
             hipError_t memcpy_result = hipMemcpy_fptr(atomics, &zero_atomics, sizeof(int), hipMemcpyHostToDevice);
             assert(memcpy_result == hipSuccess);
 
+            std::vector<uint64_t> host_buffer(BUFFER_SIZE);
+            for (int i = 0; i < BUFFER_SIZE; i++) {
+                host_buffer[i] = 0;
+            }
+
+            memcpy_result = hipMemcpy_fptr(buffer, host_buffer.data(), sizeof(uint64_t) * BUFFER_SIZE, hipMemcpyHostToDevice);
+
             assert(atomics != NULL);
             assert(buffer != NULL);
             std::printf("ATOMICS %p BUFFER %p\n", atomics, buffer);
+
+            get_atomic_addr() = (uint64_t) atomics;
+            get_buffer_addr() = (uint64_t) buffer;
 
 			for(int i = 0; i < reader.sections.size(); i++) {
 				ELFIO::section* psec = reader.sections[i];
@@ -380,6 +386,28 @@ void* __hipRegisterFatBinary(const void* data)
                                 // v_mov_b32_e32 v2, vZZ
                                 // s_mov_b64 s[0:1], vWW
 
+                                // 	s_waitcnt vmcnt(0) lgkmcnt(0)                              // 000000001038: BF8C0070
+	//v_ashrrev_i32_e32 v1, 31, v0                               // 00000000103C: 2202009F
+	//v_lshlrev_b64 v[0:1], 3, v[0:1]                            // 000000001040: D28F0000 00020083
+	//v_add_co_u32_e32 v0, vcc, 0xbeefcaaf, v0                   // 000000001048: 320000FF BEEFCAAF
+	//v_addc_co_u32_e32 v1, vcc, v3, v1, vcc                     // 000000001050: 38020303
+	//v_mov_b32_e32 v3, 0xcccccccc                               // 000000001054: 7E0602FF CCCCCCCC
+	//flat_store_dwordx2 v[0:1], v[2:3]                          // 00000000105C: DC740000 00000200
+	//s_endpgm                                                   // 000000001064: BF810000
+
+    //	v_mul_hi_i32 v1, v0, s0                                    // 000000001030: D2870001 00000100
+	//v_lshrrev_b32_e32 v3, 31, v1                               // 000000001038: 2006029F
+	//v_ashrrev_i32_e32 v1, 18, v1                               // 00000000103C: 22020292
+	//v_add_u32_e32 v1, vcc, v1, v3                              // 000000001040: 32020701
+	//v_mul_i32_i24_e32 v1, 0x2dc6c0, v1                         // 000000001044: 0C0202FF 002DC6C0
+	//v_sub_u32_e32 v0, vcc, v0, v1                              // 00000000104C: 34000300
+	//v_ashrrev_i32_e32 v1, 31, v0                               // 000000001050: 2202009F
+	//v_lshlrev_b64 v[0:1], 2, v[0:1]                            // 000000001054: D28F0000 00020082
+	//v_add_u32_e32 v0, vcc, 0xbeefcaaf, v0                      // 00000000105C: 320000FF BEEFCAAF
+	//v_addc_u32_e32 v1, vcc, v1, v2, vcc                        // 000000001064: 38020501
+
+
+
                                 uint32_t address_register = InsnFactory::get_addr_from_flat(instr.data);
                                 if (address_register < v_registers_moved - 1) {
                                     std::printf("GOT %d from FLAT \n", address_register);
@@ -391,13 +419,17 @@ void* __hipRegisterFatBinary(const void* data)
                                 uint32_t atomic_addr_high = (reinterpret_cast<uint64_t>(atomics) & (0xFFFFFFFF00000000)) >> 32;
                                 uint32_t buffer_addr_low = reinterpret_cast<uint64_t>(buffer) & (0x00000000FFFFFFFF);
                                 uint32_t buffer_addr_high = (reinterpret_cast<uint64_t>(buffer) & (0xFFFFFFFF00000000)) >> 32;
-								const uint32_t memtrace_code_sec1[] = { 0x7D940080, 0xBE80206A, 0xBF880014, 0x7E0002FF, atomic_addr_high, 0x7E0202FF, atomic_addr_low, 0x7E040281,
+								//const uint32_t memtrace_code_sec1[] = { 0x7D940080, 0xBE80206A, 0xBF880014, 0x7E0002FF, atomic_addr_high, 0x7E0202FF, atomic_addr_low, 0x7E040281 };
+								const uint32_t memtrace_code_sec1[] = { 0x7E0002FF, atomic_addr_low, 0x7E0202FF, atomic_addr_high, 0x7E040281,
                                                               //0xBF800000, 0xBF800000, 0x7E0602FF, buffer_addr_high };
-                                                              0xDD090000, 0x00000200, 0x7E0602FF, buffer_addr_high };
+                                                              //0xDD090000, 0x00000200 }; //, 0x7E0602FF, buffer_addr_high };
+                                                              0xDD090000, 0x00000200};
+                                const uint32_t memtrace_code_sec2[] = { 0xBF8C0070, 0x2202009F, 0xD28F0000, 0x00020082, 0x320000FF, buffer_addr_low, 
+                                                                        0x7E0602FF, buffer_addr_high, 0x38020303 };
+
                                 auto move_addr_low = InsnFactory::create_v_mov_b32(2, address_register, instr_pool);
-                                const uint32_t memtrace_code_sec2[] = { 0xBF8C0070, 0x2202009F, 0xD28F0000, 0x00020083, 0x320000FF, buffer_addr_low, 0x38020303 };
                                 auto move_addr_high = InsnFactory::create_v_mov_b32(3, address_register + 1, instr_pool);
-                                const uint32_t memtrace_code_sec3[] = { 0xDC740000, 0x00000200 };
+                                const uint32_t memtrace_code_sec3[] = { 0xDC740000, 0x00000200, 0xBF8C0070 };
                                 //const uint32_t memtrace_code_sec3[] = { 0xBF800000, 0xBF800000 };
 
                                 // SAVE DATA
@@ -409,11 +441,11 @@ void* __hipRegisterFatBinary(const void* data)
                                 psec->append_data((char*) saves1.ptr, saves1.size);
 
                                 //// Perform MEMTRACE
-                                //psec->append_data((char*) memtrace_code_sec1, sizeof(memtrace_code_sec1));
-                                //psec->append_data((char*) move_addr_low.ptr, move_addr_low.size);
-                                //psec->append_data((char*) memtrace_code_sec2, sizeof(memtrace_code_sec2));
-                                //psec->append_data((char*) move_addr_high.ptr, move_addr_high.size);
-                                //psec->append_data((char*) memtrace_code_sec3, sizeof(memtrace_code_sec3));
+                                psec->append_data((char*) memtrace_code_sec1, sizeof(memtrace_code_sec1));
+                                psec->append_data((char*) memtrace_code_sec2, sizeof(memtrace_code_sec2)); 
+                                psec->append_data((char*) move_addr_low.ptr, move_addr_low.size);
+                                psec->append_data((char*) move_addr_high.ptr, move_addr_high.size);
+                                psec->append_data((char*) memtrace_code_sec3, sizeof(memtrace_code_sec3));
 
                                 auto loadv0 = InsnFactory::create_v_mov_b32(0, next_free_vreg, instr_pool);
                                 auto loadv1 = InsnFactory::create_v_mov_b32(1, next_free_vreg + 1, instr_pool);

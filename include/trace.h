@@ -144,6 +144,9 @@ struct hiptracer_state {
     hipError_t  (*malloc_fptr)(void**, size_t) = NULL;
     uint64_t* memtrace = NULL;
 
+    uint64_t atomic = NULL;
+    uint64_t buffer = NULL;
+
     std::vector<std::string> filenames;
 
     atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS> events_queue;
@@ -274,6 +277,8 @@ struct hiptracer_state {
     
     ~hiptracer_state() {
         if (tool == TOOL_CAPTURE) {
+            
+
             library_loaded = false;
             events_available.notify_all();
 
@@ -285,7 +290,32 @@ struct hiptracer_state {
             }
             delete db_writer_thread;
         } else if (tool = TOOL_MEMTRACE) {
-        
+            int value = -1;
+
+            hipError_t (*hipDeviceSynchronize_fptr)() = NULL;
+            hipDeviceSynchronize_fptr = (hipError_t (*) ()) dlsym(rocm_lib, "hipDeviceSynchronize");
+
+            hipError_t sync_result = hipDeviceSynchronize_fptr();
+            assert(sync_result == hipSuccess);
+
+            hipError_t  (*hipMemcpy_fptr)(void*, const void*, size_t, hipMemcpyKind) = NULL;
+            
+            if (hipMemcpy_fptr == NULL) {
+                hipMemcpy_fptr = (hipError_t (*) (void*, const void*, size_t, hipMemcpyKind)) dlsym(rocm_lib, "hipMemcpy");
+            }
+            hipError_t memcpy_result = hipMemcpy_fptr(&value, (void*) atomic, sizeof(int), hipMemcpyDeviceToHost);
+            assert(memcpy_result == hipSuccess);
+
+            std::vector<uint64_t> host_buffer(3000000 + 10);
+            host_buffer[0] = 0;
+            memcpy_result = hipMemcpy_fptr(host_buffer.data(), (void*) buffer, sizeof(uint64_t), hipMemcpyDeviceToHost);
+
+            assert(memcpy_result == hipSuccess);
+
+            std::printf("VALUE IS %d\n", value);
+            for (int i = 0 ; i < host_buffer.size(); i++) {
+                std::printf("BUFFER [%d] is %p\n", i, host_buffer[0]);
+            }
         }
     }
 };
@@ -299,6 +329,9 @@ bool& get_library_loaded();
 std::string& get_db_path();
 std::string& get_rocm_path();
 void*& get_rocm_lib();
+uint64_t& get_atomic_addr();
+uint64_t& get_buffer_addr();
+
 ska::flat_hash_map<uint64_t, SizeOffset>& get_kernel_arg_sizes();
 ska::flat_hash_map<uint64_t, bool>& get_handled_fatbins();
 std::vector<std::string>& get_filenames();
