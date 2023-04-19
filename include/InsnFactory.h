@@ -724,7 +724,7 @@ class InsnFactory {
         static uint32_t get_addr_from_flat(std::vector<char>& instr) {
             assert(instr.size() >= 4);
             uint32_t cmd_low = 0x0;
-            std::memcpy(&cmd_low, instr.data(), 4);
+            std::memcpy(&cmd_low, instr.data() + 4, 4);
 
             return (cmd_low & 0x00FF);
         }

@@ -357,63 +357,12 @@ void* __hipRegisterFatBinary(const void* data)
 
                                 uint32_t v_registers_moved = 4;
 
-                                // MEMTRACE
-                                // v_mov_b32_e32 vXX, v0
-                                // v_mov_b32_e32 vYY, v1
-                                // v_mov_b32_e32 vZZ, v2
-                                // s_mov_b64 vWW, s[0:1] ???
-                                //         v_cmp_eq_u32_e32 vcc, 0, v0                                // 000000001000: 7D940080
-        						// s_and_saveexec_b64 s[0:1], vcc                             // 000000001004: BE80206A
-        						// s_cbranch_execz 21                                         // 000000001008: BF880015 <_Z15vectoradd_floatPfPKfS1_ii+0x60>
-        						// v_mov_b32_e32 v0, 0xbeefbeef                               // 00000000100C: 7E0002FF BEEFBEEF
-        						// v_mov_b32_e32 v1, 0                                        // 000000001014: 7E020280
-        						// v_mov_b32_e32 v2, 1                                        // 000000001018: 7E040281
-        						// flat_atomic_add v0, v[0:1], v2 glc                         // 00000000101C: DD090000 00000200
-        						// s_movk_i32 s0, 0x400                                       // 000000001024: B0000400
-        						// s_waitcnt vmcnt(0) lgkmcnt(0)                              // 000000001028: BF8C0070
-        						// v_cmp_gt_i32_e32 vcc, s0, v0                               // 00000000102C: 7D880000
-        						// s_and_b64 exec, exec, vcc                                  // 000000001030: 86FE6A7E
-        						// s_cbranch_execz 10                                         // 000000001034: BF88000A <_Z15vectoradd_floatPfPKfS1_ii+0x60>
-        						// v_ashrrev_i32_e32 v1, 31, v0                               // 000000001038: 2202009F
-        						// v_lshlrev_b64 v[0:1], 2, v[0:1]                            // 00000000103C: D28F0000 00020082
-        						// v_mov_b32_e32 v2, 0xcccccccc                               // 000000001044: 7E0402FF CCCCCCCC
-        						// v_add_co_u32_e32 v0, vcc, 0xdeadb000, v0                   // 00000000104C: 320000FF DEADB000
-        						// v_addc_co_u32_e32 v1, vcc, 0, v1, vcc                      // 000000001054: 38020280
-        						// flat_store_dword v[0:1], v2 offset:3823                    // 000000001058: DC700EEF 00000200 
-        						// s_endpgm                                                   // 000000001060: BF810000
-                                // v_mov_b32_e32 v0, vXX
-                                // v_mov_b32_e32 v1, vYY
-                                // v_mov_b32_e32 v2, vZZ
-                                // s_mov_b64 s[0:1], vWW
-
-                                // 	s_waitcnt vmcnt(0) lgkmcnt(0)                              // 000000001038: BF8C0070
-	//v_ashrrev_i32_e32 v1, 31, v0                               // 00000000103C: 2202009F
-	//v_lshlrev_b64 v[0:1], 3, v[0:1]                            // 000000001040: D28F0000 00020083
-	//v_add_co_u32_e32 v0, vcc, 0xbeefcaaf, v0                   // 000000001048: 320000FF BEEFCAAF
-	//v_addc_co_u32_e32 v1, vcc, v3, v1, vcc                     // 000000001050: 38020303
-	//v_mov_b32_e32 v3, 0xcccccccc                               // 000000001054: 7E0602FF CCCCCCCC
-	//flat_store_dwordx2 v[0:1], v[2:3]                          // 00000000105C: DC740000 00000200
-	//s_endpgm                                                   // 000000001064: BF810000
-
-    //	v_mul_hi_i32 v1, v0, s0                                    // 000000001030: D2870001 00000100
-	//v_lshrrev_b32_e32 v3, 31, v1                               // 000000001038: 2006029F
-	//v_ashrrev_i32_e32 v1, 18, v1                               // 00000000103C: 22020292
-	//v_add_u32_e32 v1, vcc, v1, v3                              // 000000001040: 32020701
-	//v_mul_i32_i24_e32 v1, 0x2dc6c0, v1                         // 000000001044: 0C0202FF 002DC6C0
-	//v_sub_u32_e32 v0, vcc, v0, v1                              // 00000000104C: 34000300
-	//v_ashrrev_i32_e32 v1, 31, v0                               // 000000001050: 2202009F
-	//v_lshlrev_b64 v[0:1], 2, v[0:1]                            // 000000001054: D28F0000 00020082
-	//v_add_u32_e32 v0, vcc, 0xbeefcaaf, v0                      // 00000000105C: 320000FF BEEFCAAF
-	//v_addc_u32_e32 v1, vcc, v1, v2, vcc                        // 000000001064: 38020501
-
-
-
                                 uint32_t address_register = InsnFactory::get_addr_from_flat(instr.data);
+                                std::printf("GOT %d from FLAT \n", address_register);
                                 if (address_register < v_registers_moved - 1) {
-                                    std::printf("GOT %d from FLAT \n", address_register);
                                     address_register += next_free_vreg;
                                 }
-                                std::printf("FOUND ADDRESS REGISTER %d\n", address_register);
+                                std::printf("ADDRESS will be in REGISTER %d\n", address_register);
 
                                 uint32_t atomic_addr_low = reinterpret_cast<uint64_t>(atomics) & (0x00000000FFFFFFFF);
                                 uint32_t atomic_addr_high = (reinterpret_cast<uint64_t>(atomics) & (0xFFFFFFFF00000000)) >> 32;
