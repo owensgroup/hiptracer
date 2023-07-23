@@ -88,7 +88,7 @@ void pushback_event(gputrace_event event)
     static bool notified = false;
     static bool prepared = false;
     
-    if (get_hiptracer_state().tool == TOOL_MEMTRACE) {
+    if (get_hiptracer_state().tool == TOOL_BININT) {
         return;
     }
     

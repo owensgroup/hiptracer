@@ -134,7 +134,7 @@ struct gputrace_event {
 
 enum HIPTRACER_TOOL {
     TOOL_CAPTURE,
-    TOOL_MEMTRACE
+    TOOL_BININT
 };
 
 void prepare_events();
@@ -255,8 +255,8 @@ struct hiptracer_state {
             if (std::string(tool_str) == "capture") {
                 tool = TOOL_CAPTURE;
                 init_capture();
-            } else if (std::string(tool_str) == "memtrace") {
-                tool = TOOL_MEMTRACE;
+            } else if (std::string(tool_str) == "binint") {
+                tool = TOOL_BININT;
             
                 if (malloc_fptr == NULL) {
                     malloc_fptr = (hipError_t (*) (void**, size_t)) dlsym(rocm_lib, "hipMalloc");
@@ -289,7 +289,7 @@ struct hiptracer_state {
                 db_writer_thread->join();
             }
             delete db_writer_thread;
-        } else if (tool = TOOL_MEMTRACE) {
+        } else if (tool = TOOL_BININT) {
             int value = -1;
 
             hipError_t (*hipDeviceSynchronize_fptr)() = NULL;
@@ -315,6 +315,7 @@ struct hiptracer_state {
             std::printf("VALUE IS %d\n", value);
             for (int i = 0 ; i < host_buffer.size(); i++) {
                 std::printf("BUFFER [%d] is %p\n", i, host_buffer[0]);
+                break;
             }
         }
     }
