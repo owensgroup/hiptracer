@@ -11,15 +11,16 @@
 #include "InstructionDecoder.h"
 #include "InsnFactory.h"
 
+// Capture
 #include "elf.h"
 #include "trace.h"
-
 #include "sqlite3.h"
-
 #include "atomic_queue/atomic_queue.h"
 #include "flat_hash_map.hpp"
 
+// Binary Instrumentation
 #include "AMDHSAKernelDescriptor.h"
+#include "binary_inst.h"
 
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
@@ -403,6 +404,11 @@ void* __hipRegisterFatBinary(const void* data)
 {
     if (hipRegisterFatBinary_fptr == NULL) {
         hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(get_rocm_lib(), "__hipRegisterFatBinary");
+        auto at_init = get_hiptracer_state().at_init_fptr;
+        if (at_init == nullptr) {
+            at_init = hipt_at_init;
+        }
+        at_init();
     }
     if (get_handled_fatbins().find((uint64_t) data) != get_handled_fatbins().end()) {
         if (get_handled_fatbins().at((uint64_t) data)) return (*hipRegisterFatBinary_fptr)(data);
@@ -502,7 +508,6 @@ hipError_t hipLaunchKernel(const void* function_address,
 
     std::string kernel_name = std::string((*hipKernelNameRefByPtr_fptr)(function_address, stream));
 
-
     XXH64_hash_t hash = XXH64(kernel_name.data(), kernel_name.size(), 0);
     uint64_t num_args = 0;
     //std::printf("Looking up %d: \n", hash);
@@ -556,7 +561,6 @@ hipError_t hipLaunchKernel(const void* function_address,
         pushback_event(event);
     } else if (get_tool() == TOOL_BININT) {
         // Get modified form of kernel
-
         std::vector<hipModule_t> modules;
 
         for (int i = 0; i < get_filenames().size(); i++) {
@@ -573,8 +577,15 @@ hipError_t hipLaunchKernel(const void* function_address,
             }
         }
 
+        auto at_launch = get_hiptracer_state().at_launch_fptr;
+        if (at_launch == nullptr) {
+            at_launch = hipt_at_launch;
+        }
+
+        at_launch(0, function_address, kernel_name.c_str(), args);
         hipModuleLaunchKernel(function, numBlocks.x, numBlocks.y, numBlocks.z, dimBlocks.x, dimBlocks.y, dimBlocks.z, sharedMemBytes,
                               stream, args, NULL);
+        at_launch(1, function_address, kernel_name.c_str(), args);
     } 
 
     return result;

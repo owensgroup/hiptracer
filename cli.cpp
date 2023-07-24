@@ -7,14 +7,15 @@ int main(int argc, char *argv[])
 {
     std::string libraryLocation = "./libhipcapture.so";
     std::string outputName = "./tracer-default.db";
-    std::string tool = "capture";
+    std::string mode = "capture";
+    std::string tool = "./libmemtrace.so";
     bool debug = false;
     bool progressbar = true;
     bool skiphostdata = false;
     std::string rest;
 
     int c;
-    while ((c = getopt(argc, argv, "l:so:dpt:")) != -1) {
+    while ((c = getopt(argc, argv, "l:so:dpt:m:")) != -1) {
         switch (c) {
         case 'l':
            libraryLocation = optarg;
@@ -31,6 +32,9 @@ int main(int argc, char *argv[])
         case 'p':
             progressbar = false;
             break;
+        case 'm':
+            mode = optarg;
+            break;
         case 't':
             tool = optarg;
             break;
@@ -43,7 +47,8 @@ int main(int argc, char *argv[])
     std::map<std::string, std::string> env = 
                                     {{ {"LD_PRELOAD", libraryLocation},
     								   {"HIPTRACER_EVENTDB", outputName},
-                                       {"HIPTRACER_TOOL", tool} }};
+                                       {"HIPTRACER_TOOL", tool},
+                                       {"HIPTRACER_MODE", mode} }};
 
     std::vector<std::string> tail;
     for (int i = optind; i < argc; i++) {

@@ -11,11 +11,14 @@ add_library(hipcapture SHARED hip/hip.cpp hip/hip-fatbin.cpp
                        hip/sqlite3.c
                        hip/xxhash.c
                        hip/msgpuck.c
-                       hip/hints.c)
+                       hip/hints.c tools/empty.hip)
 target_include_directories(hipcapture PUBLIC "include")
 target_include_directories(hipcapture PUBLIC "/opt/rocm/include")
 target_include_directories(hipcapture PUBLIC "/opt/rocm/llvm/include")
 target_include_directories(hipcapture PUBLIC ${DYNINST_INCLUDE_DIR})
+
+add_library(memtrace SHARED tools/memtrace.hip)
+
 target_link_libraries(hipcapture dl zstd pthread instructionAPI)
 
 # add_library(cudacapture SHARED cuda/cuda.cpp cuda/cuda-fatbin.cpp

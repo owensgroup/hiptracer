@@ -144,6 +144,9 @@ struct hiptracer_state {
     hipError_t  (*malloc_fptr)(void**, size_t) = NULL;
     uint64_t* memtrace = NULL;
 
+    void (*at_init_fptr)() = NULL;
+    void (*at_launch_fptr)(int, const void*, const char*, void**) = NULL;
+
     uint64_t atomic = NULL;
     uint64_t buffer = NULL;
 
@@ -245,7 +248,7 @@ struct hiptracer_state {
             
         }        
 
-        char* tool_str = std::getenv("HIPTRACER_TOOL");
+        char* tool_str = std::getenv("HIPTRACER_MODE");
         if (tool_str != NULL) {
             //std::printf("TOOL %s\n", tool_str);
 
@@ -258,10 +261,24 @@ struct hiptracer_state {
             } else if (std::string(tool_str) == "binint") {
                 tool = TOOL_BININT;
             
+                char* tool_code = std::getenv("HIPTRACER_TOOL");
+                void* tool_lib = dlopen(tool_code, RTLD_NOW);
+                assert(tool_lib);
+                std::printf("TOOL CODE %s\n", tool_code);
                 if (malloc_fptr == NULL) {
                     malloc_fptr = (hipError_t (*) (void**, size_t)) dlsym(rocm_lib, "hipMalloc");
                 }
+                if (at_init_fptr == NULL) {
+                    at_init_fptr = (void (*) ()) dlsym(tool_lib, "_Z12hipt_at_initv");
+                }
+                if (at_launch_fptr == NULL) {
+                    at_launch_fptr = (void (*) (int, const void*, const char*, void **)) dlsym(tool_lib, "_Z14hipt_at_launchiPvPKcPS_");
+                }
                 assert(malloc_fptr);
+                assert(at_init_fptr);
+                assert(at_launch_fptr);
+
+                std::printf("MADE IT\n");
 
                 // Allocate memory for traced addresses
                 malloc_fptr((void**)&memtrace, 1024 * sizeof(uint64_t));
@@ -321,6 +338,7 @@ struct hiptracer_state {
     }
 };
 
+hiptracer_state& get_hiptracer_state();
 atomic_queue::AtomicQueue2<gputrace_event, sizeof(gputrace_event) * MAX_ELEMS>& get_events_queue();
 std::atomic<int>& get_curr_event();
 sqlite3*& get_event_db();
