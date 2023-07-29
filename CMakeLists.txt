@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
-
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_HIP_ARCHITECTURES gfx908)
 
 project(hiptracer LANGUAGES C CXX HIP)
 set(CMAKE_CXX_STANDARD 17)
@@ -11,13 +11,13 @@ add_library(hipcapture SHARED hip/hip.cpp hip/hip-fatbin.cpp
                        hip/sqlite3.c
                        hip/xxhash.c
                        hip/msgpuck.c
-                       hip/hints.c tools/empty.hip)
+                       hip/hints.c tools/memtrace.hip)
 target_include_directories(hipcapture PUBLIC "include")
 target_include_directories(hipcapture PUBLIC "/opt/rocm/include")
 target_include_directories(hipcapture PUBLIC "/opt/rocm/llvm/include")
 target_include_directories(hipcapture PUBLIC ${DYNINST_INCLUDE_DIR})
 
-add_library(memtrace SHARED tools/memtrace.hip)
+#add_library(memtrace SHARED tools/memtrace.hip)
 
 target_link_libraries(hipcapture dl zstd pthread instructionAPI)
 

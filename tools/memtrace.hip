@@ -5,7 +5,7 @@ void hipt_at_init() {
     return ;
 }
 
-void hipt_at_launch(int is_exit, void* function,
+void hipt_at_launch(int is_exit, const void* function,
                     const char* kernel_name,
                     void** args) {
     if (is_exit) {

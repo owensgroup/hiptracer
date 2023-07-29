@@ -268,15 +268,15 @@ struct hiptracer_state {
                 if (malloc_fptr == NULL) {
                     malloc_fptr = (hipError_t (*) (void**, size_t)) dlsym(rocm_lib, "hipMalloc");
                 }
-                if (at_init_fptr == NULL) {
-                    at_init_fptr = (void (*) ()) dlsym(tool_lib, "_Z12hipt_at_initv");
-                }
-                if (at_launch_fptr == NULL) {
-                    at_launch_fptr = (void (*) (int, const void*, const char*, void **)) dlsym(tool_lib, "_Z14hipt_at_launchiPvPKcPS_");
-                }
+                //if (at_init_fptr == NULL) {
+                //    at_init_fptr = (void (*) ()) dlsym(tool_lib, "_Z12hipt_at_initv");
+                //}
+                //if (at_launch_fptr == NULL) {
+                //    at_launch_fptr = (void (*) (int, const void*, const char*, void **)) dlsym(tool_lib, "_Z14hipt_at_launchiPvPKcPS_");
+                //}
                 assert(malloc_fptr);
-                assert(at_init_fptr);
-                assert(at_launch_fptr);
+                //assert(at_init_fptr);
+                //assert(at_launch_fptr);
 
                 std::printf("MADE IT\n");
 

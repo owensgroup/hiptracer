@@ -66,7 +66,7 @@ void readToKd(const uint8_t *rawBytes, size_t rawBytesLength,
   }
 }
 
-void addInstrumentation(ELFIO::section* psec, std::string& text, uint32_t base, Instr instr, int* atomics, uint64_t* buffer) {
+void addInstrumentation(ELFIO::section* psec, std::string& text, uint32_t base, Instr instr, int* atomics, uint64_t* buffer, std::vector<char>& injected_instrs) {
     assert(psec != nullptr);
 
     uint64_t offset = instr.getOffset();
@@ -353,6 +353,9 @@ void binintSetupForFatBin(std::string image, std::string filename) {
                         std::printf("Instructions length originally %d bytes\n", psec->get_size());
 						std::string text{static_cast<const char*>(psec->get_data()), psec->get_size()};
 						std::vector<Instr> instructions = get_instructions(text); 
+                        int needed_sreg = 0;
+                        int needed_vreg = 0;
+                        std::vector<char> injected_instructions;
 						for (int i = 0; i < instructions.size(); i++) {
 							Instr instr = instructions[i];
                             uint32_t base = 0;
@@ -362,7 +365,7 @@ void binintSetupForFatBin(std::string image, std::string filename) {
 
                             //std::printf("Instr %d: %s\n", i, instr.getCdna());
 							if ((instr.isLoad() || instr.isStore()) && instr.isGlobal()) {  
-                                addInstrumentation(psec, text, base, instr, atomics, buffer);
+                                addInstrumentation(psec, text, base, instr, atomics, buffer, injected_instructions);
 
 							}
 						}
@@ -404,11 +407,11 @@ void* __hipRegisterFatBinary(const void* data)
 {
     if (hipRegisterFatBinary_fptr == NULL) {
         hipRegisterFatBinary_fptr = ( void* (*) (const void*)) dlsym(get_rocm_lib(), "__hipRegisterFatBinary");
-        auto at_init = get_hiptracer_state().at_init_fptr;
-        if (at_init == nullptr) {
-            at_init = hipt_at_init;
-        }
-        at_init();
+//        auto at_init = get_hiptracer_state().at_init_fptr;
+//        if (at_init == nullptr) {
+//            at_init = hipt_at_init;
+//        }
+        hipt_at_init();
     }
     if (get_handled_fatbins().find((uint64_t) data) != get_handled_fatbins().end()) {
         if (get_handled_fatbins().at((uint64_t) data)) return (*hipRegisterFatBinary_fptr)(data);
@@ -577,15 +580,15 @@ hipError_t hipLaunchKernel(const void* function_address,
             }
         }
 
-        auto at_launch = get_hiptracer_state().at_launch_fptr;
-        if (at_launch == nullptr) {
-            at_launch = hipt_at_launch;
-        }
+        //auto at_launch = get_hiptracer_state().at_launch_fptr;
+        //if (at_launch == nullptr) {
+        //    at_launch = hipt_at_launch;
+        //}
 
-        at_launch(0, function_address, kernel_name.c_str(), args);
+        hipt_at_launch(0, function_address, kernel_name.c_str(), args);
         hipModuleLaunchKernel(function, numBlocks.x, numBlocks.y, numBlocks.z, dimBlocks.x, dimBlocks.y, dimBlocks.z, sharedMemBytes,
                               stream, args, NULL);
-        at_launch(1, function_address, kernel_name.c_str(), args);
+        hipt_at_launch(1, function_address, kernel_name.c_str(), args);
     } 
 
     return result;
