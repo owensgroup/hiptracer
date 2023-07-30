@@ -42,8 +42,6 @@ std::vector<Instr> get_instructions(std::string text) {
         std::memcpy(data.data(), i.ptr(), i.size());
         instr.data = data;
 
-        //instr.num_operands = i.getNumOperands();
-
         instructions.push_back(instr);
 
         offset += instr.size;
@@ -51,6 +49,85 @@ std::vector<Instr> get_instructions(std::string text) {
     }
     std::printf("INSTRUCTIONS SIZE %d\n", instructions.size());
     return instructions;
+}
+
+std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint32_t address_register)
+{
+    std::vector<char> instrs;
+    std::vector<char*> instr_pool;
+    uint32_t next_free_vreg = 8; // TODO: Compute next register from kernel descriptor
+    uint32_t vreg_to_save = 4;
+    uint32_t sreg_to_save = 2;
+
+    for (uint32_t i = 0; i < vreg_to_save; i++) {
+        auto save_vec = InsnFactory::create_v_mov_b32(next_free_vreg + i, i, instr_pool);
+        for (uint32_t j = 0; j < save_vec.size; j++) {
+            instrs.push_back(((char*)save_vec.ptr)[j]);
+        }
+        std::free(save_vec.ptr);
+    }
+    for (uint32_t i = 0; i < sreg_to_save; i++) {
+        auto save_scalar = InsnFactory::create_v_writelane_b32(next_free_vreg + vreg_to_save + i, 0, i, instr_pool);
+        for (uint32_t j = 0; j < save_scalar.size; j++) {
+            instrs.push_back(((char*)save_scalar.ptr)[j]);
+        }
+        std::free(save_scalar.ptr);
+    }
+
+    uint32_t v_registers_moved = vreg_to_save;
+
+    if (address_register < v_registers_moved - 1) {
+        address_register += next_free_vreg;
+    }
+
+    uint32_t atomic_addr_low = reinterpret_cast<uint64_t>(atomics) & (0x00000000FFFFFFFF);
+    uint32_t atomic_addr_high = (reinterpret_cast<uint64_t>(atomics) & (0xFFFFFFFF00000000)) >> 32;
+    uint32_t buffer_addr_low = reinterpret_cast<uint64_t>(buffer) & (0x00000000FFFFFFFF);
+    uint32_t buffer_addr_high = (reinterpret_cast<uint64_t>(buffer) & (0xFFFFFFFF00000000)) >> 32; 
+    const uint32_t memtrace_code_sec1[] = { 0x7E0002FF, atomic_addr_low, 0x7E0202FF, atomic_addr_high, 0x7E040281, 0xDD090000, 0x00000200};
+    const uint32_t memtrace_code_sec2[] = { 0xBF8C0070, 0x2202009F, 0xD28F0000, 0x00020082, 0x320000FF, buffer_addr_low, 0x7E0602FF, buffer_addr_high, 0x38020303 };
+
+    const uint32_t memtrace_code_sec3[] = { 0xDC740000, 0x00000200, 0xBF8C0070 };
+
+    for (int i = 0; i < sizeof(memtrace_code_sec1); i++) {
+        instrs.push_back(((char*)memtrace_code_sec1)[i]);
+    }
+    for (int i = 0; i < sizeof(memtrace_code_sec2); i++) {
+        instrs.push_back(((char*)memtrace_code_sec2)[i]);
+    }
+
+    auto move_addr_low = InsnFactory::create_v_mov_b32(2, address_register, instr_pool);
+    auto move_addr_high = InsnFactory::create_v_mov_b32(3, address_register + 1, instr_pool);
+
+    for (int i = 0; i < move_addr_low.size; i++) {
+        instrs.push_back(((char*)move_addr_low.ptr)[i]);
+    }
+    std::free(move_addr_low.ptr);
+    for (int i = 0; i < move_addr_high.size; i++) {
+        instrs.push_back(((char*)move_addr_high.ptr)[i]);
+    }
+    std::free(move_addr_high.ptr);
+
+    for (int i = 0; i < sizeof(memtrace_code_sec3); i++) {
+        instrs.push_back(((char*)memtrace_code_sec3)[i]);
+    }
+
+    for (uint32_t i = 0; i < vreg_to_save; i++) {
+        auto load_vec = InsnFactory::create_v_mov_b32(i, next_free_vreg + i, instr_pool);
+        for (int j = 0; j < load_vec.size; j++) {
+            instrs.push_back(((char*)load_vec.ptr)[j]);
+        }
+        std::free(load_vec.ptr);
+    }
+    for (uint32_t i = 0; i < sreg_to_save; i++) {
+        auto load_scalar = InsnFactory::create_v_readlane_b32(i, 0, next_free_vreg + i + vreg_to_save, instr_pool);
+        for (int j = 0; j < load_scalar.size; j++) {
+            instrs.push_back(((char*)load_scalar.ptr)[j]);
+        }
+        std::free(load_scalar.ptr);
+    }
+    
+    return instrs;
 }
 
 void readToKd(const uint8_t *rawBytes, size_t rawBytesLength,
@@ -66,7 +143,7 @@ void readToKd(const uint8_t *rawBytes, size_t rawBytesLength,
   }
 }
 
-void addInstrumentation(ELFIO::section* psec, std::string& text, uint32_t base, Instr instr, int* atomics, uint64_t* buffer, std::vector<char>& injected_instrs) {
+void addInstrumentation(ELFIO::section* psec, std::string& text, uint32_t base, Instr instr,  std::vector<char>& injected_instrs) {
     assert(psec != nullptr);
 
     uint64_t offset = instr.getOffset();
@@ -78,94 +155,15 @@ void addInstrumentation(ELFIO::section* psec, std::string& text, uint32_t base, 
 
     // JUMP TO
     std::memcpy(&text[offset], jumpto.ptr, jumpto.size);
-    uint32_t dummy = 0xBF800000;
+    uint32_t dummy = 0xBF800000; // s_nop
     std::memcpy(&text[offset + jumpto.size], &dummy, 4);
-
-    uint32_t next_free_vreg = 8; // TODO: Compute next register from kernel descriptor
-
-    auto savev0 = InsnFactory::create_v_mov_b32(next_free_vreg, 0, instr_pool);
-    auto savev1 = InsnFactory::create_v_mov_b32(next_free_vreg + 1, 1, instr_pool);
-    auto savev2 = InsnFactory::create_v_mov_b32(next_free_vreg + 2, 2, instr_pool);
-    auto savev3 = InsnFactory::create_v_mov_b32(next_free_vreg + 3, 3, instr_pool);
-    auto saves0 = InsnFactory::create_v_writelane_b32(next_free_vreg + 4, 0, 0, instr_pool);
-    auto saves1 = InsnFactory::create_v_writelane_b32(next_free_vreg + 5, 0, 1, instr_pool);
-
-    uint32_t v_registers_moved = 4;
-
-    uint32_t address_register = InsnFactory::get_addr_from_flat(instr.data);
-    std::printf("GOT %d from FLAT \n", address_register);
-    if (address_register < v_registers_moved - 1) {
-        address_register += next_free_vreg;
-    }
-    std::printf("ADDRESS will be in REGISTER %d\n", address_register);
-
-    uint32_t atomic_addr_low = reinterpret_cast<uint64_t>(atomics) & (0x00000000FFFFFFFF);
-    uint32_t atomic_addr_high = (reinterpret_cast<uint64_t>(atomics) & (0xFFFFFFFF00000000)) >> 32;
-    uint32_t buffer_addr_low = reinterpret_cast<uint64_t>(buffer) & (0x00000000FFFFFFFF);
-    uint32_t buffer_addr_high = (reinterpret_cast<uint64_t>(buffer) & (0xFFFFFFFF00000000)) >> 32;
-    //const uint32_t memtrace_code_sec1[] = { 0x7D940080, 0xBE80206A, 0xBF880014, 0x7E0002FF, atomic_addr_high, 0x7E0202FF, atomic_addr_low, 0x7E040281 };
-    const uint32_t memtrace_code_sec1[] = { 0x7E0002FF, atomic_addr_low, 0x7E0202FF, atomic_addr_high, 0x7E040281,
-        //0xBF800000, 0xBF800000, 0x7E0602FF, buffer_addr_high };
-        //0xDD090000, 0x00000200 }; //, 0x7E0602FF, buffer_addr_high };
-    0xDD090000, 0x00000200};
-    const uint32_t memtrace_code_sec2[] = { 0xBF8C0070, 0x2202009F, 0xD28F0000, 0x00020082, 0x320000FF, buffer_addr_low, 
-        0x7E0602FF, buffer_addr_high, 0x38020303 };
-
-    auto move_addr_low = InsnFactory::create_v_mov_b32(2, address_register, instr_pool);
-    auto move_addr_high = InsnFactory::create_v_mov_b32(3, address_register + 1, instr_pool);
-    const uint32_t memtrace_code_sec3[] = { 0xDC740000, 0x00000200, 0xBF8C0070 };
-    //const uint32_t memtrace_code_sec3[] = { 0xBF800000, 0xBF800000 };
-    
-    // SAVE DATA
-    psec->append_data((char*) savev0.ptr, savev0.size);
-    psec->append_data((char*) savev1.ptr, savev1.size);
-    psec->append_data((char*) savev2.ptr, savev2.size);
-    psec->append_data((char*) savev3.ptr, savev3.size);
-    psec->append_data((char*) saves0.ptr, saves0.size);
-    psec->append_data((char*) saves1.ptr, saves1.size);
-    
-    //// Perform MEMTRACE
-    psec->append_data((char*) memtrace_code_sec1, sizeof(memtrace_code_sec1));
-    psec->append_data((char*) memtrace_code_sec2, sizeof(memtrace_code_sec2)); 
-    psec->append_data((char*) move_addr_low.ptr, move_addr_low.size);
-    psec->append_data((char*) move_addr_high.ptr, move_addr_high.size);
-    psec->append_data((char*) memtrace_code_sec3, sizeof(memtrace_code_sec3));
-    
-    auto loadv0 = InsnFactory::create_v_mov_b32(0, next_free_vreg, instr_pool);
-    auto loadv1 = InsnFactory::create_v_mov_b32(1, next_free_vreg + 1, instr_pool);
-    auto loadv2 = InsnFactory::create_v_mov_b32(2, next_free_vreg + 2, instr_pool);
-    auto loadv3 = InsnFactory::create_v_mov_b32(3, next_free_vreg + 3, instr_pool);
-    auto loads0 = InsnFactory::create_v_readlane_b32(0, 0, next_free_vreg + 4, instr_pool);
-    auto loads1 = InsnFactory::create_v_readlane_b32(1, 0, next_free_vreg + 5, instr_pool);
-    
-    // LOAD DATA
-    psec->append_data((char*) loadv0.ptr, loadv0.size);
-    psec->append_data((char*) loadv1.ptr, loadv1.size);
-    psec->append_data((char*) loadv2.ptr, loadv2.size);
-    psec->append_data((char*) loadv3.ptr, loadv3.size);
-    psec->append_data((char*) loads0.ptr, loads0.size);
-    psec->append_data((char*) loads1.ptr, loads1.size);
-    
+    // Execute INJECTED
+    psec->append_data(injected_instrs.data(), injected_instrs.size()); 
     // Execute ORIGINAL INSTRUCTION
-    psec->append_data(instr.data.data(), instr.data.size());
-    
+    psec->append_data(instr.data.data(), instr.data.size()); 
     // JUMP BACK
     auto jumpback = InsnFactory::create_s_branch(base + psec->get_size(), offset + 4, NULL, instr_pool);
-    psec->append_data((char*) jumpback.ptr, jumpback.size); 
-    
-    std::free(jumpto.ptr);
-    std::free(jumpback.ptr);
-    std::free(savev0.ptr);
-    std::free(savev1.ptr);
-    std::free(savev2.ptr);
-    std::free(saves0.ptr);
-    std::free(saves1.ptr);
-    std::free(loadv0.ptr);
-    std::free(loadv1.ptr);
-    std::free(loadv2.ptr);
-    std::free(loads0.ptr);
-    std::free(loads1.ptr);
-    std::free(move_addr_low.ptr);
+    psec->append_data((char*) jumpback.ptr, jumpback.size);     
 }
 
 void editKernelDescriptor(ELFIO::elfio& reader, ELFIO::Elf64_Addr value, ELFIO::Elf_Half section_index) {
@@ -354,8 +352,7 @@ void binintSetupForFatBin(std::string image, std::string filename) {
 						std::string text{static_cast<const char*>(psec->get_data()), psec->get_size()};
 						std::vector<Instr> instructions = get_instructions(text); 
                         int needed_sreg = 0;
-                        int needed_vreg = 0;
-                        std::vector<char> injected_instructions;
+                        int needed_vreg = 0; 
 						for (int i = 0; i < instructions.size(); i++) {
 							Instr instr = instructions[i];
                             uint32_t base = 0;
@@ -365,7 +362,10 @@ void binintSetupForFatBin(std::string image, std::string filename) {
 
                             //std::printf("Instr %d: %s\n", i, instr.getCdna());
 							if ((instr.isLoad() || instr.isStore()) && instr.isGlobal()) {  
-                                addInstrumentation(psec, text, base, instr, atomics, buffer, injected_instructions);
+                                uint32_t address_register = InsnFactory::get_addr_from_flat(instr.data); 
+                                std::vector<char> injected_instructions = get_injected_instructions(atomics, buffer, address_register);
+
+                                addInstrumentation(psec, text, base, instr, injected_instructions);
 
 							}
 						}
