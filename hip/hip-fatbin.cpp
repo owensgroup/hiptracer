@@ -25,6 +25,17 @@
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 
+std::vector<char> get_hip_code(const char* filename) {
+    ELFIO::elfio reader;
+    if (!reader.load(filename)) {
+        std::printf("Loading file %s failed\n", filename);
+    } 
+    for ( int i = 0; i < reader.sections.size(); ++i ) {
+        ELFIO::section* psec = reader.sections[i];
+        std::printf("Section name: %s \n", psec->get_name().c_str());
+    }
+}
+
 std::vector<Instr> get_instructions(std::string text) {
     std::vector<Instr> instructions;
 
