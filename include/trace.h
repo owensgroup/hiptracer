@@ -261,10 +261,10 @@ struct hiptracer_state {
             } else if (std::string(tool_str) == "binint") {
                 tool = TOOL_BININT;
             
-                char* tool_code = std::getenv("HIPTRACER_TOOL");
-                void* tool_lib = dlopen(tool_code, RTLD_NOW);
-                assert(tool_lib);
-                std::printf("TOOL CODE %s\n", tool_code);
+                //char* tool_code = std::getenv("HIPTRACER_TOOL");
+                //void* tool_lib = dlopen(tool_code, RTLD_NOW);
+                //assert(tool_lib);
+                //std::printf("TOOL CODE %s\n", tool_code);
                 if (malloc_fptr == NULL) {
                     malloc_fptr = (hipError_t (*) (void**, size_t)) dlsym(rocm_lib, "hipMalloc");
                 }
