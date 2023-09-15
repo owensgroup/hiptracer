@@ -19,6 +19,15 @@
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 
+#define HIPT_APP_INSTRCOUNT 1
+#define HIPT_APP_MEMTRACE 2
+#define HIPT_APP_COALESCE 3
+#define HIPT_APP_BANKCONFLICT 4
+
+#define HIPT_INSTRUMENTED_INSTR 3
+
+#define HIPT_CURRENT_APP HIPT_APP_INSTRCOUNT
+
 struct Instr {
     std::string cdna;
     int num_operands = 0;
@@ -250,7 +259,7 @@ struct hiptracer_state {
 
         char* tool_str = std::getenv("HIPTRACER_MODE");
         if (tool_str != NULL) {
-            //std::printf("TOOL %s\n", tool_str);
+            std::printf("TOOL %s\n", tool_str);
 
             std::filesystem::create_directory("./hostdata");
             std::filesystem::create_directory("./code");
@@ -277,14 +286,6 @@ struct hiptracer_state {
                 assert(malloc_fptr);
                 //assert(at_init_fptr);
                 //assert(at_launch_fptr);
-
-                std::printf("MADE IT\n");
-
-                // Allocate memory for traced addresses
-                malloc_fptr((void**)&memtrace, 1024 * sizeof(uint64_t));
-
-                assert(memtrace);
-                std::printf("memtrace pointer %p\n", memtrace);
             } else {
                 tool = TOOL_CAPTURE;
                 init_capture();
@@ -294,8 +295,7 @@ struct hiptracer_state {
     
     ~hiptracer_state() {
         if (tool == TOOL_CAPTURE) {
-            
-
+            printf("HELLO?\n");
             library_loaded = false;
             events_available.notify_all();
 
@@ -306,7 +306,7 @@ struct hiptracer_state {
                 db_writer_thread->join();
             }
             delete db_writer_thread;
-        } else if (tool = TOOL_BININT) {
+        } else if (tool == TOOL_BININT) {
             int value = -1;
 
             hipError_t (*hipDeviceSynchronize_fptr)() = NULL;
@@ -320,20 +320,24 @@ struct hiptracer_state {
             if (hipMemcpy_fptr == NULL) {
                 hipMemcpy_fptr = (hipError_t (*) (void*, const void*, size_t, hipMemcpyKind)) dlsym(rocm_lib, "hipMemcpy");
             }
-            hipError_t memcpy_result = hipMemcpy_fptr(&value, (void*) atomic, sizeof(int), hipMemcpyDeviceToHost);
-            assert(memcpy_result == hipSuccess);
 
-            std::vector<uint64_t> host_buffer(3000000 + 10);
-            host_buffer[0] = 0;
-            memcpy_result = hipMemcpy_fptr(host_buffer.data(), (void*) buffer, sizeof(uint64_t), hipMemcpyDeviceToHost);
-
-            assert(memcpy_result == hipSuccess);
-
-            std::printf("VALUE IS %d\n", value);
-            for (int i = 0 ; i < host_buffer.size(); i++) {
-                std::printf("BUFFER [%d] is %p\n", i, host_buffer[0]);
-                break;
+            if (HIPT_CURRENT_APP == HIPT_APP_INSTRCOUNT) {
+                hipError_t memcpy_result = hipMemcpy_fptr(&value, (void*) atomic, sizeof(int), hipMemcpyDeviceToHost);
+                assert(memcpy_result == hipSuccess);
+                std::printf("COUNT: %d\n", value);
             }
+
+            //std::vector<uint64_t> host_buffer(3000000 + 10);
+            //host_buffer[0] = 0;
+            //memcpy_result = hipMemcpy_fptr(host_buffer.data(), (void*) buffer, sizeof(uint64_t), hipMemcpyDeviceToHost);
+
+            //assert(memcpy_result == hipSuccess);
+
+            //std::printf("VALUE IS %d\n", value);
+            //for (int i = 0 ; i < host_buffer.size(); i++) {
+            //    std::printf("BUFFER [%d] is %p\n", i, host_buffer[0]);
+            //    break;
+            //}
         }
     }
 };

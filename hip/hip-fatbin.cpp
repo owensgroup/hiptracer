@@ -62,13 +62,18 @@ std::vector<Instr> get_instructions(std::string text) {
     return instructions;
 }
 
-std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint32_t address_register)
+std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint64_t buffer_size, uint32_t address_register)
 {
     std::vector<char> instrs;
     std::vector<char*> instr_pool;
     uint32_t next_free_vreg = 8; // TODO: Compute next register from kernel descriptor
     uint32_t vreg_to_save = 4;
-    uint32_t sreg_to_save = 2;
+    uint32_t sreg_to_save = 4;
+
+    //const uint32_t waitRegs[] = {0xBF8C0000 };
+    //for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
+    //    instrs.push_back(((char*)waitRegs)[i]);
+    //}
 
     for (uint32_t i = 0; i < vreg_to_save; i++) {
         auto save_vec = InsnFactory::create_v_mov_b32(next_free_vreg + i, i, instr_pool);
@@ -85,6 +90,10 @@ std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint
         std::free(save_scalar.ptr);
     }
 
+    //for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
+    //    instrs.push_back(((char*)waitRegs)[i]);
+    //}
+
     uint32_t v_registers_moved = vreg_to_save;
 
     if (address_register < v_registers_moved - 1) {
@@ -95,32 +104,64 @@ std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint
     uint32_t atomic_addr_high = (reinterpret_cast<uint64_t>(atomics) & (0xFFFFFFFF00000000)) >> 32;
     uint32_t buffer_addr_low = reinterpret_cast<uint64_t>(buffer) & (0x00000000FFFFFFFF);
     uint32_t buffer_addr_high = (reinterpret_cast<uint64_t>(buffer) & (0xFFFFFFFF00000000)) >> 32; 
-    const uint32_t memtrace_code_sec1[] = { 0x7E0002FF, atomic_addr_low, 0x7E0202FF, atomic_addr_high, 0x7E040281, 0xDD090000, 0x00000200};
-    const uint32_t memtrace_code_sec2[] = { 0xBF8C0070, 0x2202009F, 0xD28F0000, 0x00020082, 0x320000FF, buffer_addr_low, 0x7E0602FF, buffer_addr_high, 0x38020303 };
+    uint32_t buffer_size_low = (reinterpret_cast<uint64_t>(buffer_size) & (0x00000000FFFFFFFF));
+    uint32_t buffer_size_high = (reinterpret_cast<uint64_t>(buffer_size) & (0xFFFFFFFF00000000)) >> 32; 
 
-    const uint32_t memtrace_code_sec3[] = { 0xDC740000, 0x00000200, 0xBF8C0070 };
+/*
+	v_mov_b32_e32 v0, 1                                        // 000000001608: 7E000281
+	v_mov_b32_e32 v1, 0                                        // 00000000160C: 7E020280
+	v_mov_b32_e32 v2, 0                                        // 000000001610: 7E040280
+	s_waitcnt lgkmcnt(0)                                       // 000000001614: BF8CC07F
+	global_atomic_add_x2 v[0:1], v2, v[0:1], s[2:3] glc        // 000000001618: DD898000 00020002
+	s_waitcnt vmcnt(0)                                         // 000000001620: BF8C0F70
 
-    for (int i = 0; i < sizeof(memtrace_code_sec1); i++) {
-        instrs.push_back(((char*)memtrace_code_sec1)[i]);
-    }
-    for (int i = 0; i < sizeof(memtrace_code_sec2); i++) {
-        instrs.push_back(((char*)memtrace_code_sec2)[i]);
-    }
+	v_cmp_ge_u64_e32 vcc, s[4:5], v[0:1]                       // 000000001624: 7DDC0004
+	s_and_saveexec_b64 s[2:3], vcc                             // 000000001628: BE82206A
+	s_cbranch_execz 9                                          // 00000000162C: BF880009 <_Z8memtracePmS_mm+0x54>
+	v_lshlrev_b64 v[0:1], 3, v[0:1]                            // 000000001630: D28F0000 00020083
+	v_mov_b32_e32 v4, s1                                       // 000000001638: 7E080201
+	v_add_co_u32_e32 v0, vcc, s0, v0                           // 00000000163C: 32000000
+	v_mov_b32_e32 v2, s6                                       // 000000001640: 7E040206
+	v_mov_b32_e32 v3, s7                                       // 000000001644: 7E060207
+	v_addc_co_u32_e32 v1, vcc, v4, v1, vcc                     // 000000001648: 38020304
+	global_store_dwordx2 v[0:1], v[2:3], off                   // 00000000164C: DC748000 007F0200
+	s_endpgm                                                   // 000000001654: BF810000
+*/
 
-    auto move_addr_low = InsnFactory::create_v_mov_b32(2, address_register, instr_pool);
-    auto move_addr_high = InsnFactory::create_v_mov_b32(3, address_register + 1, instr_pool);
+    auto move_addr_low = InsnFactory::create_v_readlane_b32(6, 0, address_register, instr_pool);
+    auto move_addr_high = InsnFactory::create_v_readlane_b32(7, 0, address_register + 1, instr_pool);
 
-    for (int i = 0; i < move_addr_low.size; i++) {
-        instrs.push_back(((char*)move_addr_low.ptr)[i]);
-    }
-    std::free(move_addr_low.ptr);
-    for (int i = 0; i < move_addr_high.size; i++) {
-        instrs.push_back(((char*)move_addr_high.ptr)[i]);
-    }
+    //for (int i = 0; i < move_addr_low.size; i++) {
+    //    instrs.push_back(((char*)move_addr_low.ptr)[i]);
+    //}
+    //std::free(move_addr_low.ptr);
+    //for (int i = 0; i < move_addr_high.size; i++) {
+    //    instrs.push_back(((char*)move_addr_high.ptr)[i]);
+    //}
     std::free(move_addr_high.ptr);
 
-    for (int i = 0; i < sizeof(memtrace_code_sec3); i++) {
-        instrs.push_back(((char*)memtrace_code_sec3)[i]);
+    const uint32_t setup_arguments_code[] = { 0xBE8200FF, atomic_addr_low, 0xBE8300FF, atomic_addr_high  };
+    /*{ 0xBE8000FF, buffer_addr_low, 0xBE8100FF, buffer_addr_high, 0xBE8200FF, atomic_addr_low, 0xBE8300FF, atomic_addr_high, };*/
+                                              /*0xBE8400FF, buffer_size_low, 0xBE8500FF, buffer_size_high }; */
+    const uint32_t memtrace_code_sec1[] = { 0x7E000281, 0x7E020280, 0x7E040280, 0xBF8CC07F, 0xDD898000,
+                                            0x00020002, 0xBF8C0F70 }; /*0x7DDC0004, 0xBE82206A, 
+                                            0xBF880009, 0xD28F0000, 0x00020083, 0x7E080201,
+                                            0x32000000, 0x7E040206, 0x7E060207, 0x38020304,
+                                            0xDC748000, 0x007F0200, 0xBF8C0070};*/
+
+
+    //for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
+    //    instrs.push_back(((char*)waitRegs)[i]);
+    //}
+    for (int i = 0; i < sizeof(setup_arguments_code); i++) {
+        instrs.push_back(((char*)setup_arguments_code)[i]);
+    }
+    //for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
+    //    instrs.push_back(((char*)waitRegs)[i]);
+    //}
+ 
+    for (int i = 0; i < sizeof(memtrace_code_sec1); i++) {
+        instrs.push_back(((char*)memtrace_code_sec1)[i]);
     }
 
     for (uint32_t i = 0; i < vreg_to_save; i++) {
@@ -137,6 +178,10 @@ std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint
         }
         std::free(load_scalar.ptr);
     }
+
+    //for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
+    //    instrs.push_back(((char*)waitRegs)[i]);
+    //}
     
     return instrs;
 }
@@ -167,7 +212,9 @@ void addInstrumentation(ELFIO::section* psec, std::string& text, uint32_t base, 
     // JUMP TO
     std::memcpy(&text[offset], jumpto.ptr, jumpto.size);
     uint32_t dummy = 0xBF800000; // s_nop
-    std::memcpy(&text[offset + jumpto.size], &dummy, 4);
+    if (instr.size == 8) {
+        std::memcpy(&text[offset + jumpto.size], &dummy, 4);
+    }
     // Execute INJECTED
     psec->append_data(injected_instrs.data(), injected_instrs.size()); 
     // Execute ORIGINAL INSTRUCTION
@@ -177,7 +224,7 @@ void addInstrumentation(ELFIO::section* psec, std::string& text, uint32_t base, 
     psec->append_data((char*) jumpback.ptr, jumpback.size);     
 }
 
-void editKernelDescriptor(ELFIO::elfio& reader, ELFIO::Elf64_Addr value, ELFIO::Elf_Half section_index) {
+int editKernelDescriptor(ELFIO::elfio& reader, ELFIO::Elf64_Addr value, ELFIO::Elf_Half section_index, int reg_needed) {
     ELFIO::section* kd_region = reader.sections[section_index];
     std::printf("kd_region name %s size %d\n", kd_region->get_name().c_str(), kd_region->get_size());
     const size_t kd_offset = value - kd_region->get_address();
@@ -257,11 +304,13 @@ void editKernelDescriptor(ELFIO::elfio& reader, ELFIO::Elf64_Addr value, ELFIO::
 #define CHECK_WIDTH(MASK) ((vall) >> (MASK##_WIDTH) == 0)
 
     uint32_t fourByteBuffer = kdRepr.compute_pgm_rsrc1;
-    std::printf("BEFORE GRANULATED %d\n", GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT));
+    int regsUsed = (GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT) + 1) * 4;
+    std::printf("REG USED %d\n", regsUsed);
+    std::printf("REG NEEDED %d\n", reg_needed);
     fourByteBuffer = CLEAR_BITS(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT);
-    fourByteBuffer = (fourByteBuffer | ((3) << (llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT_SHIFT)));
+    fourByteBuffer = (fourByteBuffer | ((reg_needed / 4 - 1) << (llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT_SHIFT)));
 
-    //std::printf("AFTER GRANULATED %d\n", GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT));
+    std::printf("AFTER GRANULATED %d\n", GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT));
     //fourByteBuffer = CLEAR_BITS(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WAVEFRONT_SGPR_COUNT);
     //fourByteBuffer = (fourByteBuffer | ((12) << (llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WAVEFRONT_SGPR_COUNT_SHIFT)));
     //std::printf("FOUR BYTE %d\n", fourByteBuffer);
@@ -270,6 +319,8 @@ void editKernelDescriptor(ELFIO::elfio& reader, ELFIO::Elf64_Addr value, ELFIO::
     std::memcpy(data.data() + kd_offset + found_idx, &fourByteBuffer, 4); // Copy kernel descriptor back
 
     kd_region->set_data(data.data(), data.size());
+
+    return regsUsed;
 }
 
 void captureFatBin(std::string image, std::string filename)
@@ -339,7 +390,6 @@ void binintSetupForFatBin(std::string image, std::string filename) {
 
 				if (psec) {
 					std::string sec_name = psec->get_name();
-                    std::printf("SECTION NAME %s\n", sec_name.c_str());
 
                     if ( psec->get_type() == ELFIO::SHT_SYMTAB) {
                         const ELFIO:: symbol_section_accessor symbols(reader, psec);
@@ -354,11 +404,18 @@ void binintSetupForFatBin(std::string image, std::string filename) {
 
                             symbols.get_symbol(j, name, value, size, bind, type, section_index, other); 
                             if (name.find(".kd") != std::string::npos) {
-                                editKernelDescriptor(reader, value, section_index);
+                                int regsNeeded = 16;
+                                int numRegsToSave = editKernelDescriptor(reader, value, section_index, regsNeeded);
                             }
                         }
                     }
-					else if (sec_name == std::string(".text")) {
+               }
+           }
+           for (int i = 0; i < reader.sections.size(); i++) {
+               ELFIO::section* psec = reader.sections[i];
+               if (psec) {
+					std::string sec_name = psec->get_name();
+					if (sec_name == std::string(".text")) {
                         std::printf("Instructions length originally %d bytes\n", psec->get_size());
 						std::string text{static_cast<const char*>(psec->get_data()), psec->get_size()};
 						std::vector<Instr> instructions = get_instructions(text); 
@@ -372,13 +429,17 @@ void binintSetupForFatBin(std::string image, std::string filename) {
                             }
 
                             //std::printf("Instr %d: %s\n", i, instr.getCdna());
-							if ((instr.isLoad() || instr.isStore()) && instr.isGlobal()) {  
-                                uint32_t address_register = InsnFactory::get_addr_from_flat(instr.data); 
-                                std::vector<char> injected_instructions = get_injected_instructions(atomics, buffer, address_register);
+                            if (HIPT_CURRENT_APP == HIPT_APP_INSTRCOUNT && i == HIPT_INSTRUMENTED_INSTR) {
+							//if ((instr.isLoad() || instr.isStore()) && instr.isGlobal()) {  
+                            //    uint32_t address_register = InsnFactory::get_addr_from_flat(instr.data); 
+                            //    std::vector<char> injected_instructions = get_injected_instructions(atomics, buffer, BUFFER_SIZE, address_register);
 
+                            //    addInstrumentation(psec, text, base, instr, injected_instructions);
+
+							//}
+                                std::vector<char> injected_instructions = get_injected_instructions(atomics, buffer, BUFFER_SIZE, 0);
                                 addInstrumentation(psec, text, base, instr, injected_instructions);
-
-							}
+                            }
 						}
 
 						std::string newtext{static_cast<const char*>(psec->get_data()), psec->get_size()};
@@ -391,10 +452,10 @@ void binintSetupForFatBin(std::string image, std::string filename) {
 
                         std::printf("Instructions length now %d bytes \n", psec->get_size());
 					}
-            		reader.save(filename.c_str()); 
-                    get_filenames().push_back(filename);
 				}
 			}
+           	reader.save(filename.c_str()); 
+            get_filenames().push_back(filename);
 }
 
 void binintLaunch() {
@@ -422,7 +483,7 @@ void* __hipRegisterFatBinary(const void* data)
 //        if (at_init == nullptr) {
 //            at_init = hipt_at_init;
 //        }
-        hipt_at_init();
+        //hipt_at_init();
     }
     if (get_handled_fatbins().find((uint64_t) data) != get_handled_fatbins().end()) {
         if (get_handled_fatbins().at((uint64_t) data)) return (*hipRegisterFatBinary_fptr)(data);
@@ -580,6 +641,7 @@ hipError_t hipLaunchKernel(const void* function_address,
         for (int i = 0; i < get_filenames().size(); i++) {
             hipModule_t module;
             hipModuleLoad_fptr(&module, get_filenames()[i].c_str());
+            std::printf("FILE %s\n", get_filenames()[i].c_str());
             modules.push_back(module);
         } 
 
@@ -596,10 +658,10 @@ hipError_t hipLaunchKernel(const void* function_address,
         //    at_launch = hipt_at_launch;
         //}
 
-        hipt_at_launch(0, function_address, kernel_name.c_str(), args);
+        //hipt_at_launch(0, function_address, kernel_name.c_str(), args);
         hipModuleLaunchKernel(function, numBlocks.x, numBlocks.y, numBlocks.z, dimBlocks.x, dimBlocks.y, dimBlocks.z, sharedMemBytes,
                               stream, args, NULL);
-        hipt_at_launch(1, function_address, kernel_name.c_str(), args);
+        //hipt_at_launch(1, function_address, kernel_name.c_str(), args);
     } 
 
     return result;
