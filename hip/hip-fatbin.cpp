@@ -62,18 +62,18 @@ std::vector<Instr> get_instructions(std::string text) {
     return instructions;
 }
 
-std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint64_t buffer_size, uint32_t address_register)
+std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint64_t buffer_size, uint32_t address_register, int regsUsed)
 {
     std::vector<char> instrs;
     std::vector<char*> instr_pool;
-    uint32_t next_free_vreg = 8; // TODO: Compute next register from kernel descriptor
+    uint32_t next_free_vreg = regsUsed; // TODO: Compute next register from kernel descriptor
     uint32_t vreg_to_save = 4;
     uint32_t sreg_to_save = 4;
 
-    //const uint32_t waitRegs[] = {0xBF8C0000 };
-    //for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
-    //    instrs.push_back(((char*)waitRegs)[i]);
-    //}
+    const uint32_t waitRegs[] = {0xBF8C0000 };
+    for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
+        instrs.push_back(((char*)waitRegs)[i]);
+    }
 
     for (uint32_t i = 0; i < vreg_to_save; i++) {
         auto save_vec = InsnFactory::create_v_mov_b32(next_free_vreg + i, i, instr_pool);
@@ -90,9 +90,9 @@ std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint
         std::free(save_scalar.ptr);
     }
 
-    //for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
-    //    instrs.push_back(((char*)waitRegs)[i]);
-    //}
+    for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
+        instrs.push_back(((char*)waitRegs)[i]);
+    }
 
     uint32_t v_registers_moved = vreg_to_save;
 
@@ -140,28 +140,30 @@ std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint
     //}
     std::free(move_addr_high.ptr);
 
-    const uint32_t setup_arguments_code[] = { 0xBE8200FF, atomic_addr_low, 0xBE8300FF, atomic_addr_high  };
+    for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
+        instrs.push_back(((char*)waitRegs)[i]);
+    }
+
+    if (HIPT_CURRENT_APP == HIPT_APP_INSTRCOUNT) {
+        const uint32_t setup_arguments_code[] = { 0xBE8200FF, atomic_addr_low, 0xBE8300FF, atomic_addr_high  };
     /*{ 0xBE8000FF, buffer_addr_low, 0xBE8100FF, buffer_addr_high, 0xBE8200FF, atomic_addr_low, 0xBE8300FF, atomic_addr_high, };*/
                                               /*0xBE8400FF, buffer_size_low, 0xBE8500FF, buffer_size_high }; */
-    const uint32_t memtrace_code_sec1[] = { 0x7E000281, 0x7E020280, 0x7E040280, 0xBF8CC07F, 0xDD898000,
+        const uint32_t count_code[] = { 0x7E000281, 0x7E020280, 0x7E040280, 0xBF8CC07F, 0xDD898000,
                                             0x00020002, 0xBF8C0F70 }; /*0x7DDC0004, 0xBE82206A, 
                                             0xBF880009, 0xD28F0000, 0x00020083, 0x7E080201,
                                             0x32000000, 0x7E040206, 0x7E060207, 0x38020304,
                                             0xDC748000, 0x007F0200, 0xBF8C0070};*/
 
 
-    //for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
-    //    instrs.push_back(((char*)waitRegs)[i]);
-    //}
-    for (int i = 0; i < sizeof(setup_arguments_code); i++) {
-        instrs.push_back(((char*)setup_arguments_code)[i]);
-    }
-    //for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
-    //    instrs.push_back(((char*)waitRegs)[i]);
-    //}
+        for (int i = 0; i < sizeof(setup_arguments_code); i++) {
+            instrs.push_back(((char*)setup_arguments_code)[i]);
+        }
  
-    for (int i = 0; i < sizeof(memtrace_code_sec1); i++) {
-        instrs.push_back(((char*)memtrace_code_sec1)[i]);
+        for (int i = 0; i < sizeof(count_code); i++) {
+            instrs.push_back(((char*)count_code)[i]);
+        }
+    } else if (HIPT_CURRENT_APP == HIPT_APP_MEMTRACE) {
+
     }
 
     for (uint32_t i = 0; i < vreg_to_save; i++) {
@@ -179,9 +181,9 @@ std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint
         std::free(load_scalar.ptr);
     }
 
-    //for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
-    //    instrs.push_back(((char*)waitRegs)[i]);
-    //}
+    for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
+        instrs.push_back(((char*)waitRegs)[i]);
+    }
     
     return instrs;
 }
@@ -212,6 +214,7 @@ void addInstrumentation(ELFIO::section* psec, std::string& text, uint32_t base, 
     // JUMP TO
     std::memcpy(&text[offset], jumpto.ptr, jumpto.size);
     uint32_t dummy = 0xBF800000; // s_nop
+    printf("INSTR SIZE %d\n", instr.size);
     if (instr.size == 8) {
         std::memcpy(&text[offset + jumpto.size], &dummy, 4);
     }
@@ -307,8 +310,16 @@ int editKernelDescriptor(ELFIO::elfio& reader, ELFIO::Elf64_Addr value, ELFIO::E
     int regsUsed = (GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT) + 1) * 4;
     std::printf("REG USED %d\n", regsUsed);
     std::printf("REG NEEDED %d\n", reg_needed);
+    int reg = 8;
+    if (regsUsed + reg_needed <= 16) {
+        reg = 16;
+    } else if (regsUsed + reg_needed <= 40) {
+        reg = 40;
+    } else if (regsUsed + reg_needed <= 64) {
+        reg = 64;
+    }
     fourByteBuffer = CLEAR_BITS(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT);
-    fourByteBuffer = (fourByteBuffer | ((reg_needed / 4 - 1) << (llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT_SHIFT)));
+    fourByteBuffer = (fourByteBuffer | ((reg / 4 - 1) << (llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT_SHIFT)));
 
     std::printf("AFTER GRANULATED %d\n", GET_VALUE(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT));
     //fourByteBuffer = CLEAR_BITS(llvm::amdhsa::COMPUTE_PGM_RSRC1_GRANULATED_WAVEFRONT_SGPR_COUNT);
@@ -385,6 +396,7 @@ void binintSetupForFatBin(std::string image, std::string filename) {
             get_atomic_addr() = (uint64_t) atomics;
             get_buffer_addr() = (uint64_t) buffer;
 
+            int regsUsed;
 			for(int i = 0; i < reader.sections.size(); i++) {
 				ELFIO::section* psec = reader.sections[i];
 
@@ -405,7 +417,7 @@ void binintSetupForFatBin(std::string image, std::string filename) {
                             symbols.get_symbol(j, name, value, size, bind, type, section_index, other); 
                             if (name.find(".kd") != std::string::npos) {
                                 int regsNeeded = 16;
-                                int numRegsToSave = editKernelDescriptor(reader, value, section_index, regsNeeded);
+                                regsUsed = editKernelDescriptor(reader, value, section_index, regsNeeded);
                             }
                         }
                     }
@@ -437,7 +449,7 @@ void binintSetupForFatBin(std::string image, std::string filename) {
                             //    addInstrumentation(psec, text, base, instr, injected_instructions);
 
 							//}
-                                std::vector<char> injected_instructions = get_injected_instructions(atomics, buffer, BUFFER_SIZE, 0);
+                                std::vector<char> injected_instructions = get_injected_instructions(atomics, buffer, BUFFER_SIZE, 0, regsUsed);
                                 addInstrumentation(psec, text, base, instr, injected_instructions);
                             }
 						}
@@ -641,7 +653,7 @@ hipError_t hipLaunchKernel(const void* function_address,
         for (int i = 0; i < get_filenames().size(); i++) {
             hipModule_t module;
             hipModuleLoad_fptr(&module, get_filenames()[i].c_str());
-            std::printf("FILE %s\n", get_filenames()[i].c_str());
+            //std::printf("FILE %s\n", get_filenames()[i].c_str());
             modules.push_back(module);
         } 
 
