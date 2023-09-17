@@ -24,9 +24,9 @@
 #define HIPT_APP_COALESCE 3
 #define HIPT_APP_BANKCONFLICT 4
 
-#define HIPT_INSTRUMENTED_INSTR 3
+#define HIPT_INSTRUMENTED_INSTR 32
 
-#define HIPT_CURRENT_APP HIPT_APP_INSTRCOUNT
+#define HIPT_CURRENT_APP HIPT_APP_MEMTRACE
 
 struct Instr {
     std::string cdna;
@@ -321,23 +321,25 @@ struct hiptracer_state {
                 hipMemcpy_fptr = (hipError_t (*) (void*, const void*, size_t, hipMemcpyKind)) dlsym(rocm_lib, "hipMemcpy");
             }
 
-            if (HIPT_CURRENT_APP == HIPT_APP_INSTRCOUNT) {
+            if (HIPT_CURRENT_APP == HIPT_APP_INSTRCOUNT || HIPT_CURRENT_APP == HIPT_APP_MEMTRACE) {
                 hipError_t memcpy_result = hipMemcpy_fptr(&value, (void*) atomic, sizeof(int), hipMemcpyDeviceToHost);
                 assert(memcpy_result == hipSuccess);
                 std::printf("COUNT: %d\n", value);
             }
+            if (HIPT_CURRENT_APP == HIPT_APP_MEMTRACE) {
+                std::vector<uint64_t> host_buffer(3000000 + 10);
+                host_buffer[0] = 0;
+                hipError_t memcpy_result = hipMemcpy_fptr(host_buffer.data(), (void*) buffer, sizeof(uint64_t), hipMemcpyDeviceToHost);
 
-            //std::vector<uint64_t> host_buffer(3000000 + 10);
-            //host_buffer[0] = 0;
-            //memcpy_result = hipMemcpy_fptr(host_buffer.data(), (void*) buffer, sizeof(uint64_t), hipMemcpyDeviceToHost);
+                assert(memcpy_result == hipSuccess);
 
-            //assert(memcpy_result == hipSuccess);
-
-            //std::printf("VALUE IS %d\n", value);
-            //for (int i = 0 ; i < host_buffer.size(); i++) {
-            //    std::printf("BUFFER [%d] is %p\n", i, host_buffer[0]);
-            //    break;
-            //}
+                std::printf("VALUE IS %d\n", value);
+                for (int i = 0 ; i < host_buffer.size(); i++) {
+                    std::printf("BUFFER [%d] is %p\n", i, host_buffer[0]);
+                    if (i % 96 == 95)
+                    break;
+                }
+            }
         }
     }
 };
