@@ -168,10 +168,10 @@ std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint
 
     //const uint32_t memtrace_code_sec3[] = { 0xDC740000, 0x00000103 };
 
-            const uint32_t memtrace_code_sec1[] = { 0x7E0002FF, atomic_addr_low, 0x7E0202FF, atomic_addr_high, 0x7E0402A0, 0xDD090000, 0x00000200};
-    const uint32_t memtrace_code_sec2[] = { 0xBF8C0070, 0x2202009F, 0xBF8C0070, 0xD28F0000, 0x00020082, 0x320000FF, buffer_addr_low, 0x7E0602FF, buffer_addr_high, 0x38020303 };
+            const uint32_t memtrace_code_sec1[] = { 0x7E0002FF, atomic_addr_low, 0x7E0202FF, atomic_addr_high, 0x7E040281, 0xDD090000, 0x02000200};
+    const uint32_t memtrace_code_sec2[] = { 0x7E060280, 0x7E0202FF, buffer_addr_high, 0xBF8C0070, 0xD28F0002, 0x00020483, 0x320404FF, buffer_addr_low, 0x38060701 };
 
-    const uint32_t memtrace_code_sec3[] = { 0xDC740000, 0x00000200, 0xBF8C0070 };
+    const uint32_t memtrace_code_sec3[] = { 0xDC740000, 0x00000002 };
 
 
         for (int i = 0; i < sizeof(memtrace_code_sec1); i++) {
@@ -181,21 +181,17 @@ std::vector<char> get_injected_instructions(int* atomics, uint64_t* buffer, uint
             instrs.push_back(((char*)memtrace_code_sec2)[i]);
         }
 
-        auto move_addr_low = InsnFactory::create_v_mov_b32(2, address_register, instr_pool);
-        auto move_addr_high = InsnFactory::create_v_mov_b32(3, address_register + 1, instr_pool);
+        auto move_addr_low = InsnFactory::create_v_mov_b32(0, address_register, instr_pool);
+        auto move_addr_high = InsnFactory::create_v_mov_b32(1, address_register + 1, instr_pool);
 
-        for (int i = 0; i < move_addr_low.size; i++) {
-            instrs.push_back(((char*)move_addr_low.ptr)[i]);
-        }
-        std::free(move_addr_low.ptr);
-        for (int i = 0; i < move_addr_high.size; i++) {
-            instrs.push_back(((char*)move_addr_high.ptr)[i]);
-        }
-        std::free(move_addr_high.ptr);
-
-        for (uint32_t i = 0; i < sizeof(waitRegs); i ++) {
-            instrs.push_back(((char*)waitRegs)[i]);
-        }
+        //for (int i = 0; i < move_addr_low.size; i++) {
+        //    instrs.push_back(((char*)move_addr_low.ptr)[i]);
+        //}
+        //std::free(move_addr_low.ptr);
+        //for (int i = 0; i < move_addr_high.size; i++) {
+        //    instrs.push_back(((char*)move_addr_high.ptr)[i]);
+        //}
+        //std::free(move_addr_high.ptr);
 
         for (int i = 0; i < sizeof(memtrace_code_sec3); i++) {
             instrs.push_back(((char*)memtrace_code_sec3)[i]);
