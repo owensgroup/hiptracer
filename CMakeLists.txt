@@ -19,7 +19,7 @@ target_include_directories(hipcapture PUBLIC ${DYNINST_INCLUDE_DIR})
 
 #add_library(memtrace SHARED tools/memtrace.hip)
 
-target_link_libraries(hipcapture dl zstd pthread instructionAPI)
+target_link_libraries(hipcapture dl zstd pthread instructionAPI -static-libgcc -static-libstdc++)
 
 # add_library(cudacapture SHARED cuda/cuda.cpp cuda/cuda-fatbin.cpp
 #                                hip/sqlite3.c)
@@ -37,6 +37,7 @@ target_include_directories(replay PUBLIC "/opt/rocm/llvm/include")
 target_link_libraries(replay dl pthread readline /opt/rocm/lib/libamdhip64.so)
 
 add_executable(hiptracer cli.cpp)
+target_link_libraries(hiptracer -static-libgcc -static-libstdc++) 
 target_include_directories(hiptracer PUBLIC include)
 
 enable_testing()
